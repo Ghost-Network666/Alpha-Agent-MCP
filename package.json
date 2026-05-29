@@ -1,0 +1,56 @@
+{
+  "name": "alphamcp-ts",
+  "version": "0.1.0",
+  "description": "Production-ready Polymarket trading client in TypeScript using only the official @polymarket/client@beta SDK",
+  "type": "module",
+  "main": "dist/lib.js",
+  "types": "dist/lib.d.ts",
+  "bin": {
+    "polymarket-client": "dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    },
+    "./strategies": {
+      "types": "./dist/strategies/marketMaker.d.ts",
+      "import": "./dist/strategies/marketMaker.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx --watch src/index.ts",
+    "start": "node dist/index.js",
+    "mcp": "node dist/mcp.js",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prestart": "npm run build",
+    "lint": "echo 'add biome or eslint later'"
+  },
+  "keywords": [
+    "polymarket",
+    "prediction-markets",
+    "trading",
+    "sdk",
+    "market-making"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@polymarket/client": "beta",
+    "dotenv": "^16.4.5",
+    "viem": "^2.21.0",
+    "winston": "^3.14.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
