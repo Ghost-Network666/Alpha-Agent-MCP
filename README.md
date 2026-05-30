@@ -108,9 +108,36 @@ This opens an interactive checklist.
 ### Credential Handling (Critical)
 
 - **Never** commit your `EOA_PRIVATE_KEY` or `DEPOSIT_WALLET_ADDRESS` anywhere.
-- These values are supplied **only at registration time** via the `--env` flags.
-- When an agent updates this repo, it will never touch or overwrite the credentials in your Hermes config — they stay exactly as you provided them.
-- The `hermes-manifest.yaml` file in this repo provides structured defaults (including recommended tool allowlist) for future Hermes catalog-style installs (`hermes mcp install` / catalog).
+- These values are supplied **only once** at registration time via the `--env` flags (or during interactive catalog install).
+- **When an agent updates this repo**, it must **never** re-run the registration command. Doing so risks losing or requiring re-entry of your keys.
+- Your Hermes configuration (including all credentials under `mcp_servers.polymarket.env`) remains **completely untouched** during any code updates.
+
+### Updating the MCP (Safe Flow for Agents)
+
+This is the correct and safe way for agents to keep the MCP updated:
+
+1. Pull latest code and rebuild (credentials are never touched):
+   ```bash
+   cd /absolute/path/to/Alpha-MCP-TS
+   git pull
+   pnpm install && pnpm build     # or: npm install && npm run build
+   ```
+
+2. In your Hermes session:
+   ```bash
+   /reload-mcp
+   ```
+
+3. (Recommended) Start a fresh session.
+
+A helper script is included for agents:
+```bash
+./scripts/hermes-safe-update.sh
+```
+
+This script safely updates + rebuilds and explicitly reminds that your keys in `~/.hermes/config.yaml` are left alone.
+
+**Registration is one-time only.** After the initial `hermes mcp add`, you should only ever pull the repo + rebuild + `/reload-mcp`. Never re-run the add command on updates.
 
 **Note**: Requires Node.js ≥ 22.
 
