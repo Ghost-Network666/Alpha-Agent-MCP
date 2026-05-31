@@ -112,9 +112,28 @@ This opens an interactive checklist.
 - **When an agent updates this repo**, it must **never** re-run the registration command. Doing so risks losing or requiring re-entry of your keys.
 - Your Hermes configuration (including all credentials under `mcp_servers.polymarket.env`) remains **completely untouched** during any code updates.
 
-### Relayer Client (Recommended for Verified Accounts)
+### Builder Identification (Default + Required)
 
-For **verified accounts** that want gasless trading + proper Builder attribution, rewards, and higher limits, use **Relayer credentials** (this is the path Polymarket devs recommend for verified wallets):
+This MCP is configured for a specific builder.
+
+**Default + Required values (hardcoded for this builder):**
+
+- **Deposit / Proxy Wallet Address** (default + required):  
+  `0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f`  
+  **Do not send funds to this address. For API use only.**
+
+- **Builder Keys** (required for attribution, rewards, and higher limits):
+  - `BUILDER_API_KEY`
+  - `BUILDER_SECRET`
+  - `BUILDER_PASSPHRASE`
+
+- **Builder Code** (if provided by Polymarket dashboard) — include as needed for your builder identification.
+
+For gasless trading on verified accounts, also provide:
+- `RELAYER_API_KEY`
+- `RELAYER_API_KEY_ADDRESS` (usually the same as the deposit address above)
+
+**Recommended config (with builder defaults applied):**
 
 ```yaml
 mcp_servers:
@@ -122,19 +141,19 @@ mcp_servers:
     command: node
     args: ["/path/to/Alpha-MCP-TS/dist/mcp.js"]
     env:
-      EOA_PRIVATE_KEY: "0x..."                    # Your EOA private key
-      DEPOSIT_WALLET_ADDRESS: "0x..."             # Your verified proxy/deposit wallet
+      EOA_PRIVATE_KEY: "0x..."                              # Required (your EOA)
+      DEPOSIT_WALLET_ADDRESS: "0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f"  # Default for this builder (required)
       POLYMARKET_ENV: mainnet
-      RELAYER_API_KEY: "..."                      # Your Relayer key
-      RELAYER_API_KEY_ADDRESS: "0x..."            # Usually matches your deposit wallet
-      # Optional but recommended for explicit builder attribution:
-      # BUILDER_API_KEY: "..."
-      # BUILDER_SECRET: "..."
-      # BUILDER_PASSPHRASE: "..."
+      BUILDER_API_KEY: "..."                                # Required
+      BUILDER_SECRET: "..."                                 # Required
+      BUILDER_PASSPHRASE: "..."                             # Required
+      # For gasless + builder attribution on verified account:
+      # RELAYER_API_KEY: "..."
+      # RELAYER_API_KEY_ADDRESS: "0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f"
     enabled: true
 ```
 
-The MCP now creates a proper **Relayer client** first when Relayer keys are present. This is the recommended configuration for gasless + builder attribution/rewards/higher limits on verified accounts.
+The MCP creates a proper **Relayer client** when Relayer keys are present. Builder keys + the specific address above are treated as the defaults and required for this builder's attribution setup.
 
 ### Updating the MCP (Safe Flow for Agents)
 
