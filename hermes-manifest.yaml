@@ -59,8 +59,9 @@ tools:
   prompts: false
 
 # For verified accounts wanting gasless trading + builder attribution/rewards/higher limits,
-# provide RELAYER_API_KEY + RELAYER_API_KEY_ADDRESS (and optionally Builder keys).
-# The MCP will create a proper Relayer client.
+# the recommended path is to provide RELAYER_API_KEY + RELAYER_API_KEY_ADDRESS.
+# The MCP now creates a proper Relayer client first.
+# You can also include Builder keys for explicit attribution.
 
 post_install: |
   After installation, run:

@@ -112,9 +112,9 @@ This opens an interactive checklist.
 - **When an agent updates this repo**, it must **never** re-run the registration command. Doing so risks losing or requiring re-entry of your keys.
 - Your Hermes configuration (including all credentials under `mcp_servers.polymarket.env`) remains **completely untouched** during any code updates.
 
-### Builder + Relayer Setup (Recommended for Gasless + Attribution + Higher Limits)
+### Relayer Client (Recommended for Verified Accounts)
 
-If you have a **verified Polymarket account** and want gasless trading + proper Builder attribution/rewards/higher limits, use **Relayer** credentials (as recommended by Polymarket devs for verified accounts):
+For **verified accounts** that want gasless trading + proper Builder attribution, rewards, and higher limits, use **Relayer credentials** (this is the path Polymarket devs recommend for verified wallets):
 
 ```yaml
 mcp_servers:
@@ -122,19 +122,19 @@ mcp_servers:
     command: node
     args: ["/path/to/Alpha-MCP-TS/dist/mcp.js"]
     env:
-      EOA_PRIVATE_KEY: "0x..."
-      DEPOSIT_WALLET_ADDRESS: "0x..."
+      EOA_PRIVATE_KEY: "0x..."                    # Your EOA private key
+      DEPOSIT_WALLET_ADDRESS: "0x..."             # Your verified proxy/deposit wallet
       POLYMARKET_ENV: mainnet
-      RELAYER_API_KEY: "..."                    # From your Polymarket Relayer keys
-      RELAYER_API_KEY_ADDRESS: "0x..."          # Usually your deposit/proxy wallet
-      # Optional: Builder keys if you also want explicit attribution
+      RELAYER_API_KEY: "..."                      # Your Relayer key
+      RELAYER_API_KEY_ADDRESS: "0x..."            # Usually matches your deposit wallet
+      # Optional but recommended for explicit builder attribution:
       # BUILDER_API_KEY: "..."
       # BUILDER_SECRET: "..."
       # BUILDER_PASSPHRASE: "..."
     enabled: true
 ```
 
-The MCP will create a proper **Relayer client** when `RELAYER_API_KEY` + `RELAYER_API_KEY_ADDRESS` are provided. This enables gasless execution while still supporting builder attribution when your Relayer is linked to a Builder on Polymarket's side.
+The MCP now creates a proper **Relayer client** first when Relayer keys are present. This is the recommended configuration for gasless + builder attribution/rewards/higher limits on verified accounts.
 
 ### Updating the MCP (Safe Flow for Agents)
 

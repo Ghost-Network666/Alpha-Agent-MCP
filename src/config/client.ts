@@ -42,8 +42,10 @@ export async function getSecureClient(): Promise<SecureClient<PublicActions, Sec
     signer,
   };
 
-  // Relayer client (gasless + builder attribution when the relayer is linked to a builder)
-  // This is the recommended path for verified accounts wanting gasless trading + proper builder rewards/higher limits.
+  // === RELAYER CLIENT (Primary / Recommended for verified accounts) ===
+  // For verified accounts that want gasless trading + proper builder attribution,
+  // rewards, and higher limits, use Relayer credentials.
+  // The Relayer should be linked to your Builder on Polymarket's side for attribution.
   if (auth.RELAYER_API_KEY && auth.RELAYER_API_KEY_ADDRESS) {
     options.apiKey = relayerApiKey({
       key: auth.RELAYER_API_KEY,
@@ -51,22 +53,21 @@ export async function getSecureClient(): Promise<SecureClient<PublicActions, Sec
     });
     logger.info('Using Relayer API key authentication (gasless)');
 
-    // If builder keys are also provided, we still log it (attribution is usually handled by the relayer being associated with the builder on Polymarket side)
     if (auth.BUILDER_API_KEY && auth.BUILDER_SECRET && auth.BUILDER_PASSPHRASE) {
-      logger.info('Builder keys also present — volume should attribute to builder if the relayer is linked to it');
+      logger.info('Builder keys also detected — ensure your Relayer is associated with this builder for attribution/rewards');
     }
   } 
-  // Fallback to pure Builder keys (no gasless, but good for attribution + limits)
+  // === BUILDER ONLY (Fallback - no gasless) ===
   else if (auth.BUILDER_API_KEY && auth.BUILDER_SECRET && auth.BUILDER_PASSPHRASE) {
     options.apiKey = builderApiKey({
       key: auth.BUILDER_API_KEY,
       secret: auth.BUILDER_SECRET,
       passphrase: auth.BUILDER_PASSPHRASE,
     });
-    logger.info('Using Builder API key authentication');
+    logger.info('Using Builder API key authentication (no gasless)');
   } 
   else {
-    logger.warn('No API key configured — using L1 wallet signature auth (lower rate limits)');
+    logger.warn('No API key configured — using L1 wallet signature auth (lower rate limits, no gasless)');
   }
 
   secureClientInstance = await createSecureClient(options);
