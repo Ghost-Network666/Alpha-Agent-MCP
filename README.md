@@ -112,6 +112,30 @@ This opens an interactive checklist.
 - **When an agent updates this repo**, it must **never** re-run the registration command. Doing so risks losing or requiring re-entry of your keys.
 - Your Hermes configuration (including all credentials under `mcp_servers.polymarket.env`) remains **completely untouched** during any code updates.
 
+### Builder + Relayer Setup (Recommended for Gasless + Attribution + Higher Limits)
+
+If you have a **verified Polymarket account** and want gasless trading + proper Builder attribution/rewards/higher limits, use **Relayer** credentials (as recommended by Polymarket devs for verified accounts):
+
+```yaml
+mcp_servers:
+  polymarket:
+    command: node
+    args: ["/path/to/Alpha-MCP-TS/dist/mcp.js"]
+    env:
+      EOA_PRIVATE_KEY: "0x..."
+      DEPOSIT_WALLET_ADDRESS: "0x..."
+      POLYMARKET_ENV: mainnet
+      RELAYER_API_KEY: "..."                    # From your Polymarket Relayer keys
+      RELAYER_API_KEY_ADDRESS: "0x..."          # Usually your deposit/proxy wallet
+      # Optional: Builder keys if you also want explicit attribution
+      # BUILDER_API_KEY: "..."
+      # BUILDER_SECRET: "..."
+      # BUILDER_PASSPHRASE: "..."
+    enabled: true
+```
+
+The MCP will create a proper **Relayer client** when `RELAYER_API_KEY` + `RELAYER_API_KEY_ADDRESS` are provided. This enables gasless execution while still supporting builder attribution when your Relayer is linked to a Builder on Polymarket's side.
+
 ### Updating the MCP (Safe Flow for Agents)
 
 This is the correct and safe way for agents to keep the MCP updated:

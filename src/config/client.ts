@@ -42,21 +42,30 @@ export async function getSecureClient(): Promise<SecureClient<PublicActions, Sec
     signer,
   };
 
-  // Prefer builder API key (recommended for production attribution + limits)
-  if (auth.BUILDER_API_KEY && auth.BUILDER_SECRET && auth.BUILDER_PASSPHRASE) {
+  // Relayer client (gasless + builder attribution when the relayer is linked to a builder)
+  // This is the recommended path for verified accounts wanting gasless trading + proper builder rewards/higher limits.
+  if (auth.RELAYER_API_KEY && auth.RELAYER_API_KEY_ADDRESS) {
+    options.apiKey = relayerApiKey({
+      key: auth.RELAYER_API_KEY,
+      address: auth.RELAYER_API_KEY_ADDRESS,
+    });
+    logger.info('Using Relayer API key authentication (gasless)');
+
+    // If builder keys are also provided, we still log it (attribution is usually handled by the relayer being associated with the builder on Polymarket side)
+    if (auth.BUILDER_API_KEY && auth.BUILDER_SECRET && auth.BUILDER_PASSPHRASE) {
+      logger.info('Builder keys also present — volume should attribute to builder if the relayer is linked to it');
+    }
+  } 
+  // Fallback to pure Builder keys (no gasless, but good for attribution + limits)
+  else if (auth.BUILDER_API_KEY && auth.BUILDER_SECRET && auth.BUILDER_PASSPHRASE) {
     options.apiKey = builderApiKey({
       key: auth.BUILDER_API_KEY,
       secret: auth.BUILDER_SECRET,
       passphrase: auth.BUILDER_PASSPHRASE,
     });
     logger.info('Using Builder API key authentication');
-  } else if (auth.RELAYER_API_KEY && auth.RELAYER_API_KEY_ADDRESS) {
-    options.apiKey = relayerApiKey({
-      key: auth.RELAYER_API_KEY,
-      address: auth.RELAYER_API_KEY_ADDRESS,
-    });
-    logger.info('Using Relayer API key authentication');
-  } else {
+  } 
+  else {
     logger.warn('No API key configured — using L1 wallet signature auth (lower rate limits)');
   }
 
