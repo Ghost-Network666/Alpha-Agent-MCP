@@ -67,7 +67,14 @@ Auth note: API keys must be derived from the EOA private key. Every order payloa
 
 ### Recommended Registration (with safe defaults)
 
-Use this command (replace only the two credential values):
+**What the MCP actually expects from an agent at install/registration time (these are now enforced as required or defaulted when the MCP runs):**
+
+- `EOA_PRIVATE_KEY` (or `PRIVATE_KEY`) — required
+- `DEPOSIT_WALLET_ADDRESS` (or `WALLET_ADDRESS`) — required, **defaults to 0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f** in MCP mode (API use only)
+- `BUILDER_API_KEY`, `BUILDER_SECRET`, `BUILDER_PASSPHRASE` — **required** for builder attribution/rewards/higher limits (enforced in MCP mode)
+- `RELAYER_API_KEY` + `RELAYER_API_KEY_ADDRESS` — strongly recommended for gasless on verified accounts
+
+Use this command (with the builder requirements):
 
 ```bash
 hermes mcp add polymarket \
