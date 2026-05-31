@@ -71,10 +71,12 @@ Auth note: API keys must be derived from the EOA private key. Every order payloa
 
 - `EOA_PRIVATE_KEY` (or `PRIVATE_KEY`) — required
 - `DEPOSIT_WALLET_ADDRESS` (or `WALLET_ADDRESS`) — required, **defaults to 0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f** in MCP mode (API use only)
-- `BUILDER_API_KEY`, `BUILDER_SECRET`, `BUILDER_PASSPHRASE` — **required** for builder attribution/rewards/higher limits (enforced in MCP mode)
-- `RELAYER_API_KEY` + `RELAYER_API_KEY_ADDRESS` — strongly recommended for gasless on verified accounts
+- `BUILDER_API_KEY` + `BUILDER_SECRET` + `BUILDER_PASSPHRASE` — one valid auth strategy (direct builder HMAC)
+- `RELAYER_API_KEY` + `RELAYER_API_KEY_ADDRESS` — the other valid auth strategy (gasless on verified accounts)
 
-Use this command (with the builder requirements):
+You must supply **at least one** of the two strategies (both are supported and create separate clients). Relayer is preferred when available for gasless trading.
+
+Use this command (with at least one API key strategy — Relayer preferred for gasless):
 
 ```bash
 hermes mcp add polymarket \
@@ -119,28 +121,19 @@ This opens an interactive checklist.
 - **When an agent updates this repo**, it must **never** re-run the registration command. Doing so risks losing or requiring re-entry of your keys.
 - Your Hermes configuration (including all credentials under `mcp_servers.polymarket.env`) remains **completely untouched** during any code updates.
 
-### Builder Identification (Default + Required)
+### Authentication Strategies (Relayer vs Builder)
 
-This MCP is configured for a specific builder.
+The SDK only allows **one** `apiKey` strategy per `SecureClient` instance. This MCP therefore supports both strategies as **separate clients**:
 
-**Default + Required values (hardcoded for this builder):**
+- **Relayer** (`RELAYER_API_KEY` + `RELAYER_API_KEY_ADDRESS`): Recommended for gasless trading on verified accounts. The Relayer is typically linked to a Builder on the Polymarket side for attribution/rewards.
+- **Builder** (`BUILDER_API_KEY` + `BUILDER_SECRET` + `BUILDER_PASSPHRASE`): Direct HMAC builder authentication (no gasless).
 
-- **Deposit / Proxy Wallet Address** (default + required):  
-  `0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f`  
-  **Do not send funds to this address. For API use only.**
+You must provide **at least one** complete set. Both can be supplied at the same time — `getSecureClient()` will prefer Relayer (gasless) when available, while `getRelayerClient()` and `getBuilderClient()` give you explicit access.
 
-- **Builder Keys** (required for attribution, rewards, and higher limits):
-  - `BUILDER_API_KEY`
-  - `BUILDER_SECRET`
-  - `BUILDER_PASSPHRASE`
+**Default wallet (this builder's deposit/proxy):**
+`0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f` — API use only.
 
-- **Builder Code** (if provided by Polymarket dashboard) — include as needed for your builder identification.
-
-For gasless trading on verified accounts, also provide:
-- `RELAYER_API_KEY`
-- `RELAYER_API_KEY_ADDRESS` (usually the same as the deposit address above)
-
-**Recommended config (with builder defaults applied):**
+**Recommended config example:**
 
 ```yaml
 mcp_servers:
@@ -149,18 +142,18 @@ mcp_servers:
     args: ["/path/to/Alpha-MCP-TS/dist/mcp.js"]
     env:
       EOA_PRIVATE_KEY: "0x..."                              # Required (your EOA)
-      DEPOSIT_WALLET_ADDRESS: "0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f"  # Default for this builder (required)
+      DEPOSIT_WALLET_ADDRESS: "0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f"
       POLYMARKET_ENV: mainnet
-      BUILDER_API_KEY: "..."                                # Required
-      BUILDER_SECRET: "..."                                 # Required
-      BUILDER_PASSPHRASE: "..."                             # Required
-      # For gasless + builder attribution on verified account:
-      # RELAYER_API_KEY: "..."
-      # RELAYER_API_KEY_ADDRESS: "0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f"
+      # At least one of the two strategies below:
+      RELAYER_API_KEY: "..."                                # Preferred for gasless
+      RELAYER_API_KEY_ADDRESS: "0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f"
+      # BUILDER_API_KEY: "..."
+      # BUILDER_SECRET: "..."
+      # BUILDER_PASSPHRASE: "..."
     enabled: true
 ```
 
-The MCP creates a proper **Relayer client** when Relayer keys are present. Builder keys + the specific address above are treated as the defaults and required for this builder's attribution setup.
+The old hard requirement for only Builder keys in MCP mode has been removed. Either strategy (or both) now works.
 
 ### Updating the MCP (Safe Flow for Agents)
 
