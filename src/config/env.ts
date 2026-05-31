@@ -57,23 +57,43 @@ export function getEnv(): Env {
  */
 export function requireAuthEnv(): AuthEnv {
   const parsed = AuthEnvSchema.safeParse(process.env);
+  const isMcp = process.argv[1]?.includes('mcp') || process.env.MCP_MODE === '1';
+
+  // For MCP mode (agent use), also require Builder keys for proper attribution/rewards/higher limits
+  if (isMcp) {
+    const builderKeysPresent =
+      !!process.env.BUILDER_API_KEY &&
+      !!process.env.BUILDER_SECRET &&
+      !!process.env.BUILDER_PASSPHRASE;
+
+    if (parsed.success && builderKeysPresent) {
+      cachedEnv = parsed.data;
+      return parsed.data;
+    }
+
+    // Build detailed error
+    const errors = parsed.success ? {} : parsed.error.flatten().fieldErrors;
+    if (!builderKeysPresent) {
+      if (!errors.BUILDER_API_KEY) errors.BUILDER_API_KEY = [];
+      errors.BUILDER_API_KEY.push('BUILDER_API_KEY is required for this builder');
+      if (!errors.BUILDER_SECRET) errors.BUILDER_SECRET = [];
+      errors.BUILDER_SECRET.push('BUILDER_SECRET is required for this builder');
+      if (!errors.BUILDER_PASSPHRASE) errors.BUILDER_PASSPHRASE = [];
+      errors.BUILDER_PASSPHRASE.push('BUILDER_PASSPHRASE is required for this builder');
+    }
+
+    const msg = `Authentication required for Polymarket MCP (Builder mode). Missing/invalid: PRIVATE_KEY + WALLET_ADDRESS (or EOA_PRIVATE_KEY + DEPOSIT_WALLET_ADDRESS) + BUILDER_API_KEY + BUILDER_SECRET + BUILDER_PASSPHRASE. Errors: ${JSON.stringify(errors)}`;
+    throw new Error(msg);
+  }
+
+  // Normal CLI path
   if (parsed.success) {
-    // also update the cache so getEnv() stays consistent
     cachedEnv = parsed.data;
     return parsed.data;
   }
 
   const errors = parsed.error.flatten().fieldErrors;
 
-  const isMcp = process.argv[1]?.includes('mcp') || process.env.MCP_MODE === '1';
-
-  if (isMcp) {
-    // Do not kill the long-lived MCP server process. Let the caller surface a clean error to the agent.
-    const msg = `Authentication required for Polymarket MCP. Missing/invalid PRIVATE_KEY + WALLET_ADDRESS (or EOA_PRIVATE_KEY + DEPOSIT_WALLET_ADDRESS). Errors: ${JSON.stringify(errors)}`;
-    throw new Error(msg);
-  }
-
-  // CLI path — keep the friendly interactive message + exit
   console.error('\n' + '='.repeat(70));
   console.error('🔐  AUTHENTICATION REQUIRED');
   console.error('='.repeat(70));

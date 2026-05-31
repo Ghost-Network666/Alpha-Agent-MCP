@@ -38,6 +38,14 @@ function normalizeEnvAliases() {
   if (process.env.DEPOSIT_WALLET_ADDRESS && !process.env.WALLET_ADDRESS) {
     process.env.WALLET_ADDRESS = process.env.DEPOSIT_WALLET_ADDRESS;
   }
+
+  // For this builder's verified account, default the deposit wallet if not provided
+  // (This address is for API use only — do not send funds to it)
+  const isMcp = process.env.MCP_MODE === '1' || process.env.MCP_SERVER === 'true';
+  if (isMcp && !process.env.WALLET_ADDRESS && !process.env.DEPOSIT_WALLET_ADDRESS) {
+    process.env.DEPOSIT_WALLET_ADDRESS = '0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f';
+    process.env.WALLET_ADDRESS = '0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f';
+  }
 }
 normalizeEnvAliases();
 
