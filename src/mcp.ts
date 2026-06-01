@@ -1437,7 +1437,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           price: args.price,
           size: args.size,
           side: args.side,
-          orderType: 'GTC',
           postOnly: true,
         };
 
