@@ -30,7 +30,6 @@ import type {
   UserRewardsEarning,
   Tag,
   Series,
-  Comment,
   NotificationsResponse,
   BuilderTrade,
   BuilderVolumeEntry,
@@ -758,17 +757,6 @@ export function formatSeries(series: Series): object {
     'Liquidity': formatDecimal(series.liquidity),
     'Active': series.active ? 'Yes' : 'No',
     'Closed': series.closed ? 'Yes' : 'No',
-  });
-}
-
-export function formatComment(comment: Comment): object {
-  return omitUndefined({
-    'Id': comment.id,
-    'Author': truncateAddress(comment.authorAddress || (comment as any).owner),
-    'Pseudonym': comment.pseudonym,
-    'Text': comment.text || comment.body,
-    'Timestamp': formatDate(comment.timestamp || comment.createdAt),
-    'Likes': comment.likeCount || comment.likes,
   });
 }
 
