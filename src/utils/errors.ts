@@ -59,3 +59,57 @@ export async function withErrorHandling<T>(
     throw error; // unreachable but satisfies TS
   }
 }
+
+/** Simple sleep for backoff */
+export function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Rate limit resilient wrapper for Polymarket SDK calls.
+ * On RateLimitError it does exponential backoff with jitter (max 3 attempts).
+ * Returns a structured result so the agent can react gracefully instead of the
+ * MCP host seeing repeated hard failures that mark the server "unreachable".
+ */
+export async function callWithRateLimitProtection<T>(
+  fn: () => Promise<T>,
+  context: string,
+  maxRetries = 2
+): Promise<{ ok: true; data: T } | { ok: false; rateLimited: true; retryAfterMs: number; message: string }> {
+  let attempt = 0;
+  let delay = 1200; // start ~1.2s
+
+  while (true) {
+    try {
+      const data = await fn();
+      return { ok: true, data };
+    } catch (error: any) {
+      const isRateLimit =
+        error?.name === 'RateLimitError' ||
+        /rate limit|too many requests|429/i.test(String(error?.message || ''));
+
+      if (!isRateLimit || attempt >= maxRetries) {
+        if (isRateLimit) {
+          logger.warn(`Rate limited in ${context} after ${attempt + 1} attempts`, { context });
+          return {
+            ok: false,
+            rateLimited: true,
+            retryAfterMs: Math.floor(delay * 1.8),
+            message: `Polymarket rate limited ${context}. Wait ~${Math.ceil(delay / 1000)}s before retrying this type of call.`
+          };
+        }
+        // Non-rate-limit error — let the normal error path handle it
+        throw error;
+      }
+
+      // Rate limited — back off
+      const jitter = Math.floor(Math.random() * 400);
+      const wait = delay + jitter;
+      logger.warn(`Rate limited in ${context} (attempt ${attempt + 1}). Backing off ${wait}ms`, { context });
+      await sleep(wait);
+
+      delay = Math.min(delay * 1.7, 8000); // cap around 8s
+      attempt++;
+    }
+  }
+}

@@ -23,6 +23,7 @@ import {
   deleteApiKey,
 } from '@polymarket/client/actions';
 import { createResourceManager, RESOURCE_CAPABILITIES } from './mcp/resources.js';
+import { callWithRateLimitProtection, sleep } from './utils/errors.js';
 
 // Mark as MCP server early so logger, env, and other modules can adapt (no stdout pollution, no process.exit on auth errors).
 process.env.MCP_MODE = '1';
@@ -135,8 +136,10 @@ async function callPaginatedWithFormat(paginatorPromise: Promise<any>, formatter
     let items = page?.items ?? page?.data ?? (Array.isArray(page) ? page : []);
 
     // Global safety: cap very large responses to protect agents from bloat
-    if (Array.isArray(items) && items.length > 200) {
-      items = items.slice(0, 200);
+    // Aggressive global safety cap (lowered further for reward-era lightness)
+    const MAX_ITEMS = 25;
+    if (Array.isArray(items) && items.length > MAX_ITEMS) {
+      items = items.slice(0, MAX_ITEMS);
     }
 
     const formatted = Array.isArray(items) ? items.map(formatter) : formatter(items);
@@ -376,7 +379,7 @@ const publicTools = [
   // Reward programs (public viewing)
   {
     name: 'list_current_rewards',
-    description: 'List currently active reward programs',
+    description: 'RAW SDK: List currently active reward programs (can return large payloads). For all autonomous reward-farming agent loops, use list_active_maker_reward_markets instead — it is tiny (hard cap 10), ranked by attractiveness, enriched with market questions + yes/no tokenIds + direct links, and designed so agents never need to ask humans for "next market".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -386,7 +389,7 @@ const publicTools = [
   },
   {
     name: 'list_market_rewards',
-    description: 'List reward configuration for a specific market',
+    description: 'RAW SDK: List reward configuration for a specific market (conditionId). Prefer list_active_maker_reward_markets for discovery and switching.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1243,7 +1246,7 @@ const secureTools = [
   // === Maker Rewards Focused Workflow (High Success Rate for Earning Rewards) ===
   {
     name: 'place_maker_reward_order',
-    description: 'STRICT REWARD-ONLY TOOL. This is the ONLY tool you should use if you want the agent to ONLY place orders that earn maker rewards. It forces a pure maker order (GTC + postOnly), confirms scoring, and can optionally actively monitor until the order fills or definitively fails to fill. Use monitorFills: true when you need the agent to wait for actual on-chain confirmation.',
+    description: 'STRICT REWARD-ONLY TOOL. Forces GTC+postOnly and only succeeds on confirmed scoring orders. IMPORTANT: Polymarket CLOB is rate-limited. Do NOT call this (or list_active_maker_reward_markets) in a tight loop. Add 4-8s delays between attempts or you will make the MCP server unreachable. On any failure you get a strong autonomous directive instead of "what do you want me to do?".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1267,25 +1270,18 @@ const secureTools = [
   // === Maker Rewards Support Tools (to address agent feedback) ===
   {
     name: 'list_active_maker_reward_markets',
-    description: 'Lists markets that currently have active maker reward programs. Use compact mode (default) for lightweight responses suitable for agents. Set compact=false for full details.',
+    description: 'PRIMARY AUTONOMOUS DISCOVERY TOOL (tiny ranked top 5 default). Returns best current reward markets with tokens + links. CRITICAL: This is expensive. Do not call more than once every 4-6 seconds during loops, or you will trigger rate limits and make the MCP server unreachable. Use the ranked list you already have. On placement failures the directives tell you exactly what to do next without asking the human.',
     inputSchema: {
       type: 'object',
       properties: {
-        pageSize: { type: 'number', description: 'Number of results per page (default 30, max 100 recommended for agents)' },
-        compact: { 
-          type: 'boolean', 
-          description: 'Return compact lightweight format (default: true). When false, returns full detailed reward configs.' 
-        },
-        includeConfigs: { 
-          type: 'boolean', 
-          description: 'Include full reward config details even in compact mode (default: false)' 
-        }
+        maxResults: { type: 'number', description: 'Hard max results to return (default 10, absolute max 15 for agent safety). Use 5-10 for fastest autonomous loops.' },
+        compact: { type: 'boolean', description: 'Always ultra-compact ranked entries (default true). Non-compact returns more fields but still capped.' }
       }
     }
   },
   {
     name: 'validate_for_maker_rewards',
-    description: 'Pre-placement check. Given a tokenId (or market) and proposed size/price, tells you whether this order would meet the current active maker reward program rules (min size and max spread). This helps avoid placing orders that have no chance of scoring.',
+    description: 'Lightweight pre-check for a specific token + size/price. Returns tiny response by design. If you see huge output, restart your MCP server (old dist/ is loaded). Use list_active_maker_reward_markets first for discovery — this is only for fine-tuning one market.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1334,6 +1330,20 @@ const secureTools = [
         orderId: { type: 'string' }
       },
       required: ['orderId']
+    }
+  },
+  {
+    name: 'get_balance_allowance',
+    description: 'HIGH PRIORITY for reward farming. Checks your current COLLATERAL (USDC) or CONDITIONAL token balance + allowance on the CLOB. Returns human-readable numbers and exact next steps (approve + deposit + update). Call this BEFORE any place_maker_reward_order when you see balance/allowance errors.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assetType: { 
+          type: 'string', 
+          enum: ['COLLATERAL', 'CONDITIONAL'], 
+          description: 'COLLATERAL for USDC (most common). CONDITIONAL for specific outcome tokens.' 
+        }
+      }
     }
   },
 
@@ -1498,17 +1508,61 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           postOnly: true,
         };
 
-        // 1. Place as pure maker
-        const signed = await sec.createLimitOrder(params);
-        const posted = await sec.postOrder(signed);
+        // 1. Place as pure maker (with good error handling for the most common blocker + rate limits)
+        let signed: any;
+        let posted: any;
+        try {
+          const createRes = await callWithRateLimitProtection(
+            () => sec.createLimitOrder(params),
+            'createLimitOrder (maker reward)'
+          );
+          if (!createRes.ok) {
+            return {
+              success: false, rateLimited: true, retryAfterMs: createRes.retryAfterMs,
+              message: createRes.message,
+              agentDirective: "Rate limited while creating order. Slow down your loop significantly (min 4-6s between placement attempts). Do not hammer the placement tools."
+            };
+          }
+          signed = createRes.data;
+
+          const postRes = await callWithRateLimitProtection(
+            () => sec.postOrder(signed),
+            'postOrder (maker reward)'
+          );
+          if (!postRes.ok) {
+            return {
+              success: false, rateLimited: true, retryAfterMs: postRes.retryAfterMs,
+              message: postRes.message,
+              agentDirective: "Rate limited while posting maker order. Wait the recommended time. Rapid placement attempts are the fastest way to get the MCP server marked unreachable."
+            };
+          }
+          posted = postRes.data;
+        } catch (placeErr: any) {
+          const errMsg = String(placeErr?.message || placeErr || '');
+          const isBalanceErr = /balance|allowance|not enough|insufficient/i.test(errMsg);
+
+          if (isBalanceErr) {
+            return {
+              success: false,
+              message: "Placement failed due to insufficient balance or allowance.",
+              rawError: errMsg.substring(0, 300),
+              agentDirective: "CRITICAL: Your wallet has 0 (or too low) balance/allowance for this order. DO NOT retry placement. IMMEDIATELY call get_balance_allowance (assetType: 'COLLATERAL'). Follow its nextSteps exactly (approve_erc20 if needed → deposit USDC → update_balance_allowance). Only after that succeeds, come back and try place_maker_reward_order or (better) place_optimized_reward_order again. This is the #1 reason reward orders fail before they even reach scoring.",
+              recommendedTool: "get_balance_allowance"
+            };
+          }
+
+          // Other placement error
+          throw placeErr;
+        }
+
         const orderId = (posted as any)?.orderId;
 
         if (orderId) {
           resourceManager.ensureUserSubscriptionForWatch(orderId).catch(() => {});
         }
 
-        // 2. Multiple scoring checks with increasing delays (more reliable than single check)
-        const checkDelays = [2500, 4000, 6000]; // total ~13 seconds max
+        // 2. Multiple scoring checks with increasing delays + rate limit protection
+        const checkDelays = [2500, 4000, 6000];
         let isScoring = false;
         let lastCheckedAt = 0;
 
@@ -1516,10 +1570,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await new Promise(r => setTimeout(r, delay));
           lastCheckedAt = Date.now();
           try {
-            isScoring = await sec.fetchOrderScoring({ orderId });
-            if (isScoring) break; // success — locked onto rewards
+            const scoringRes = await callWithRateLimitProtection(
+              () => sec.fetchOrderScoring({ orderId }),
+              'fetchOrderScoring (post placement)'
+            );
+            if (scoringRes.ok) {
+              isScoring = scoringRes.data;
+              if (isScoring) break;
+            } else {
+              // Rate limited during scoring checks — treat as non-scoring for now and surface guidance
+              break;
+            }
           } catch (e) {
-            // ignore transient errors
+            // transient
           }
         }
 
@@ -1631,14 +1694,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
           }
 
-          // Enhanced diagnostics on failure
+          // Enhanced diagnostics on failure (rate limit protected)
           let diagnostics = null;
           try {
-            // Try to get current market conditions
-            const [book, rewards] = await Promise.all([
-              pub.fetchOrderBook({ tokenId: args.tokenId }).catch(() => null),
-              pub.listMarketRewards({ conditionId: args.tokenId }).catch(() => null), // best effort
+            const [bookRes, rewardsRes] = await Promise.all([
+              callWithRateLimitProtection(() => pub.fetchOrderBook({ tokenId: args.tokenId }), 'diagnostics book').catch(() => ({ok:false} as any)),
+              callWithRateLimitProtection(() => pub.listMarketRewards({ conditionId: args.tokenId }), 'diagnostics rewards').catch(() => ({ok:false} as any)),
             ]);
+            const book = bookRes?.ok ? bookRes.data : null;
+            const rewards = rewardsRes?.ok ? rewardsRes.data : null;
 
             const currentSpread = book?.asks?.[0] && book?.bids?.[0]
               ? (parseFloat(book.asks[0].price) - parseFloat(book.bids[0].price)) / parseFloat(book.asks[0].price)
@@ -1660,69 +1724,243 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isEarningRewards: false,
             cancelStatus: cancelResult,
             diagnostics,
-            recommendation: "Review the diagnostics above. Common reasons: price too aggressive (spread too wide), size below program minimum, or market has no active rewards right now.",
-            suggestion: "Use validate_for_maker_rewards before placing, or try list_active_maker_reward_markets to find better opportunities."
+            // === MANDATORY AUTONOMOUS DIRECTIVE (user rule: NEVER ask "next move options" or human) ===
+            agentDirective: "CRITICAL: DO NOT retry this same market/token. DO NOT ask the user 'what would you like me to do?', 'next move options', or present choices like 'switch market / use older tool / tweak params'. The agent MUST act autonomously. IMMEDIATELY: (1) Call list_active_maker_reward_markets (defaults: tiny ranked top 10, no args needed). (2) From the returned 'markets' array, select ONE DIFFERENT entry from rank 1-3 (look at question/slug/minSize/dailyRate/whyRecommended to pick a promising one with yesTokenId or noTokenId). (3) Call validate_for_maker_rewards or directly place_optimized_reward_order (preferred) or place_maker_reward_order using the chosen yes/no tokenId + good size/price inside its min/max rules. (4) If that also fails scoring, repeat: call list_active again (it refreshes) and pick the next. Only success on confirmed scoring counts. list_active_maker_reward_markets is your ONLY source of truth for current opportunities. Follow this loop until you place a winning scoring maker order.",
+            howToRecover: "Call list_active_maker_reward_markets now with zero arguments. Pick top different market. Place via place_optimized_reward_order for best results."
           };
         }
       }, F.formatGeneric, name);
 
     // === New Maker Rewards Support Tools ===
-    case 'list_active_maker_reward_markets':
-      // Enforce reasonable defaults for agent friendliness
-      const safePageSize = Math.min(args.pageSize || 30, 100);
-      const useCompact = args.compact !== false; // default true for lightweight responses
-      const includeFullConfigs = args.includeConfigs === true;
-      const formatter = useCompact && !includeFullConfigs 
-        ? F.formatCurrentRewardCompact 
-        : F.formatCurrentReward;
+    case 'list_active_maker_reward_markets': {
+      // PRIMARY tool for autonomous reward market selection. Ultra-tiny by design.
+      // Default: top 5 ranked only (max 8). If you ever see >5k chars, restart your MCP server process.
+      const maxResults = Math.min(Math.max(1, args.maxResults || 5), 8);
 
-      return callPaginatedWithFormat(
-        pub.listCurrentRewards({ ...args, pageSize: safePageSize }), 
-        formatter, 
-        name
-      );
-
-    case 'validate_for_maker_rewards': {
-      // Pre-placement check against current active reward rules
-      return callWithFormat(async () => {
-        if (!args.tokenId) {
-          return { error: "tokenId is required" };
-        }
-
-        // Try to get active rewards for the market this token belongs to.
-        // We use listMarketRewards with the conditionId if we can derive it, otherwise fall back to current rewards.
-        let rewards = [];
-        try {
-          // Best effort: call listCurrentRewards and filter
-          const paginator = await pub.listCurrentRewards({ pageSize: 100 });
-          const page = await paginator.firstPage();
-          rewards = page?.items || [];
-        } catch (e) {
-          return { error: "Could not fetch active reward programs" };
-        }
-
-        if (!rewards.length) {
+      let rewardItems: any[] = [];
+      try {
+        const protectedCall = await callWithRateLimitProtection(
+          () => pub.listCurrentRewards({ pageSize: Math.min(30, maxResults * 2) }),
+          'listCurrentRewards (active reward markets)'
+        );
+        if (!protectedCall.ok) {
           return {
-            eligible: false,
-            reason: "No active maker reward programs right now.",
-            recommendation: "Use list_active_maker_reward_markets to find markets with active programs."
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              success: false, rateLimited: true, retryAfterMs: protectedCall.retryAfterMs,
+              message: protectedCall.message,
+              directive: "Polymarket is rate limiting. Slow down. Do not call list_active_maker_reward_markets more than once every 4-6 seconds. Use the previous ranked list you already received."
+            }) }]
           };
         }
-
-        // For simplicity in v1, we return the active programs and let the agent compare size/price.
-        // A more advanced version would take conditionId and do exact matching.
+        const paginator = protectedCall.data;
+        const page = await paginator.firstPage();
+        rewardItems = (page?.items || []).slice(0, maxResults);
+      } catch (e: any) {
         return {
-          has_active_programs: true,
-          active_programs: rewards.map(r => F.formatCurrentReward(r)),
-          note: "Compare your proposed size against 'Min Order Size (to qualify)' and price against 'Max Spread Allowed' in the programs above.",
-          proposed: {
-            tokenId: args.tokenId,
-            size: args.size,
-            price: args.price,
-            side: args.side
-          }
+          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: "Failed to fetch current reward programs", detail: e?.message || String(e) }) }]
         };
-      }, F.formatGeneric, name);
+      }
+
+      if (!rewardItems.length) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            success: true,
+            message: "No active maker reward programs right now.",
+            markets: [],
+            directive: "No opportunities. Wait and retry later or check back with this tool."
+          }) }]
+        };
+      }
+
+      // Batch-resolve market metadata (question, slug, tokens) using conditionIds filter — one call
+      const conditionIds = rewardItems.map((r: any) => r.conditionId).filter(Boolean);
+      let marketsByCondition: Record<string, any> = {};
+      if (conditionIds.length) {
+        try {
+          const protectedMkt = await callWithRateLimitProtection(
+            () => pub.listMarkets({ conditionIds, pageSize: conditionIds.length, closed: false }),
+            'listMarkets batch for reward enrichment'
+          );
+          if (protectedMkt.ok) {
+            const mktPage = await protectedMkt.data.firstPage();
+            for (const m of (mktPage?.items || [])) {
+              if (m.conditionId) marketsByCondition[m.conditionId] = m;
+            }
+          }
+        } catch (e) {
+          // Non-fatal
+        }
+      }
+
+      // Compute attractiveness score for ranking (prefer low barrier + decent rate)
+      function attractiveness(r: any): number {
+        const minSz = parseFloat(r.rewardsMinSize ?? r.rewards_min_size ?? '50');
+        const maxSp = Number(r.rewardsMaxSpread ?? r.rewards_max_spread ?? 0.05);
+        const rate = parseFloat(r.totalDailyRate ?? r.total_daily_rate ?? r.sponsoredDailyRate ?? r.nativeDailyRate ?? '0');
+        // Higher score = easier to qualify (low minSz) + better payout rate + not too loose spread
+        const ease = 100 / Math.max(1, minSz);
+        const rateScore = Math.min(100, rate / 2); // normalize rough
+        const spreadPenalty = Math.max(0.1, maxSp) * 50;
+        return (ease * 2) + rateScore - spreadPenalty;
+      }
+
+      const ranked = [...rewardItems]
+        .map((r: any) => {
+          const m = marketsByCondition[r.conditionId] || {};
+          const minSz = r.rewardsMinSize ?? r.rewards_min_size;
+          const maxSp = r.rewardsMaxSpread ?? r.rewards_max_spread;
+          const daily = r.totalDailyRate ?? r.total_daily_rate ?? r.sponsoredDailyRate ?? '0';
+          const assets = (r.rewardsConfig || []).map((c: any) => c.assetAddress).filter(Boolean);
+          const slug = m.slug || r.conditionId;
+          const marketLink = `https://polymarket.com/market/${slug}`;
+
+          // Extract Yes/No tokenIds robustly (guarantee exposure like other market formatters)
+          const yesTok = m.outcomes?.yes?.tokenId
+            ?? m.tokens?.find((t: any) => (t.outcome || t.side) === 'Yes')?.tokenId
+            ?? m.yesTokenId;
+          const noTok = m.outcomes?.no?.tokenId
+            ?? m.tokens?.find((t: any) => (t.outcome || t.side) === 'No')?.tokenId
+            ?? m.noTokenId;
+
+          const score = attractiveness(r);
+          const entry: any = {
+            rank: 0, // filled after sort
+            question: m.question || `Market ${r.conditionId.slice(0, 10)}...`,
+            slug,
+            conditionId: r.conditionId,
+            yesTokenId: yesTok,
+            noTokenId: noTok,
+            minSize: minSz,
+            maxSpread: maxSp,
+            dailyRate: daily,
+            payoutAssets: assets.length ? assets : undefined,
+            marketLink,
+            attractiveness: Number(score.toFixed(2)),
+            whyRecommended: minSz && parseFloat(minSz) <= 10 ? 'Low min size (easy to qualify)' : (daily && parseFloat(daily) > 50 ? 'High reward rate' : 'Active program')
+          };
+          return { entry, score, raw: r, market: m };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxResults)
+        .map((x, i) => { x.entry.rank = i + 1; return x.entry; });
+
+      const payload = {
+        success: true,
+        count: ranked.length,
+        note: "Ranked best-first (top 5 default). Ultra-light for agents. Restart MCP after code updates if responses look large.",
+        markets: ranked,
+        usage: "Pick rank #1-3. Use its yesTokenId or noTokenId. On any scoring failure, call this tool again and pick the next."
+      };
+
+      let json = JSON.stringify(payload, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 0);
+      // Hard safety: never let this tool exceed ~5k chars even in weird cases
+      if (json.length > 5500) {
+        const reduced = { ...payload, markets: ranked.slice(0, 3), note: "Truncated to top 3 due to size guard. Call again for fresh top 5." };
+        json = JSON.stringify(reduced, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 0);
+      }
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: json
+        }]
+      };
+    }
+
+    case 'validate_for_maker_rewards': {
+      // Lightweight per-proposal pre-check. NEVER dumps full program lists (that caused bloat). Tiny response always.
+      return callWithFormat(async () => {
+        if (!args.tokenId) {
+          return { success: false, error: "tokenId is required (Yes or No token for the outcome you want to place on)" };
+        }
+
+        // 1. Get current book for this specific token (gives real spread to check against maxSpread rules)
+        let book: any = null;
+        try {
+          const bookRes = await callWithRateLimitProtection(
+            () => pub.fetchOrderBook({ tokenId: args.tokenId }),
+            'fetchOrderBook (validate)'
+          );
+          if (bookRes.ok) book = bookRes.data;
+        } catch {}
+
+        const bestBid = book?.bids?.[0]?.price ? parseFloat(book.bids[0].price) : null;
+        const bestAsk = book?.asks?.[0]?.price ? parseFloat(book.asks[0].price) : null;
+        const currentSpread = (bestBid && bestAsk) ? Math.abs(bestAsk - bestBid) : null;
+        const mid = (bestBid && bestAsk) ? (bestBid + bestAsk) / 2 : null;
+
+        // 2. Small active programs snapshot (capped hard, no full dump)
+        let activeCount = 0;
+        let programsHint: any[] = [];
+        try {
+          const protectedRewards = await callWithRateLimitProtection(
+            () => pub.listCurrentRewards({ pageSize: 10 }),
+            'listCurrentRewards (validate)'
+          );
+          if (protectedRewards.ok) {
+            const page = await protectedRewards.data.firstPage();
+            const items = page?.items || [];
+            activeCount = items.length;
+            programsHint = items.slice(0, 2).map((r: any) => ({
+              minSize: r.rewardsMinSize,
+              maxSpread: r.rewardsMaxSpread,
+              dailyRate: r.totalDailyRate || r.sponsoredDailyRate
+            }));
+          }
+        } catch {}
+
+        const proposedSize = args.size != null ? parseFloat(String(args.size)) : null;
+        const proposedPrice = args.price != null ? parseFloat(String(args.price)) : null;
+
+        let sizeOk = null;
+        let spreadLikelyOk = null;
+        let overallEligible = false;
+        let reason = "Insufficient data for precise check (provide size + price + side for full validation).";
+
+        if (proposedSize != null && programsHint.length) {
+          const exampleMin = parseFloat(programsHint[0]?.minSize || '5');
+          sizeOk = proposedSize >= exampleMin;
+        }
+        if (proposedPrice != null && mid != null && currentSpread != null && programsHint.length) {
+          const exampleMaxSp = parseFloat(programsHint[0]?.maxSpread || '0.005');
+          const distanceFromOpp = args.side?.toUpperCase() === 'BUY' ? (mid - proposedPrice) : (proposedPrice - mid);
+          spreadLikelyOk = distanceFromOpp >= 0 && (currentSpread / 2 + distanceFromOpp) / mid <= exampleMaxSp; // rough inside max spread
+        }
+        if (sizeOk !== null || spreadLikelyOk !== null) {
+          overallEligible = (sizeOk !== false) && (spreadLikelyOk !== false);
+          reason = overallEligible 
+            ? "Proposal looks compatible with typical active program rules (size + spread). Final scoring decided by Polymarket after order is live."
+            : "Proposal likely violates at least one rule (size too small or price too aggressive vs current book + max spread).";
+        }
+
+        const result = {
+          success: true,
+          eligible: overallEligible,
+          reason,
+          proposed: { tokenId: args.tokenId, size: args.size, price: args.price, side: args.side },
+          tokenBook: {
+            bestBid: bestBid ? bestBid.toFixed(4) : null,
+            bestAsk: bestAsk ? bestAsk.toFixed(4) : null,
+            currentSpreadPct: currentSpread ? (currentSpread * 100).toFixed(3) + '%' : 'unknown'
+          },
+          activeProgramsSnapshot: {
+            count: activeCount,
+            exampleRules: programsHint.length ? programsHint : undefined,
+            note: "Use list_active_maker_reward_markets (the ranked 5) for real markets + tokens + rules."
+          },
+          directive: overallEligible 
+            ? "Looks good — proceed with place_optimized_reward_order or place_maker_reward_order."
+            : "Bad proposal for current rules. Call list_active_maker_reward_markets now and pick a different top market."
+        };
+
+        // Return directly (bypasses formatGeneric) for guaranteed tiny payload
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(result, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 0)
+          }]
+        };
+      });
     }
 
     case 'suggest_reward_order_parameters': {
@@ -1738,8 +1976,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         if (!book || !rewards?.items?.length) {
           return {
+            success: false,
             suggestion: null,
-            reason: "Could not find active reward programs or current market data for this token."
+            reason: "No active reward program found specifically for this token's market (listMarketRewards returned none).",
+            directive: "Call list_active_maker_reward_markets (the ranked list) instead — it surfaces markets that DO have active programs with resolved tokens. Pick one from there and use its yes/no tokenId here or with place_optimized_reward_order."
           };
         }
 
@@ -1797,16 +2037,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         })();
 
         if (!suggestion) {
-          return { success: false, error: "Could not generate good parameters for this market." };
+          return { 
+            success: false, 
+            error: "Could not generate good parameters for this market (no book or no active program matched via listMarketRewards).",
+            directive: "This token's market may not be in current rewards. Call list_active_maker_reward_markets immediately, pick a top-ranked market from the list (it has yes/no tokens + confirmed active programs), then call place_optimized_reward_order on one of its tokens."
+          };
         }
 
-        // Step 2: Validate
+        // Step 2: Validate (use tiny cap to avoid any bloat)
         const validation = await (async () => {
-          // Simplified validation using the same logic as validate_for_maker_rewards
-          const rewards = await pub.listCurrentRewards({ pageSize: 50 }).catch(() => null);
-          const programs = rewards?.items || [];
-          const relevant = programs.find((p: any) => p.conditionId === args.tokenId || true); // best effort
-          return { ok: true, programs };
+          const rewards = await pub.listCurrentRewards({ pageSize: 10 }).catch(() => null);
+          const programs = (rewards?.items || []).slice(0, 5);
+          return { ok: true, programsCount: programs.length };
         })();
 
         // Step 3: Place using the strict tool logic
@@ -1848,6 +2090,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             success: false,
             message: "Suggested parameters did not result in a scoring order. Auto-cancelled.",
             suggestion,
+            agentDirective: "The optimized attempt on this token failed to lock scoring. DO NOT loop on same token. Call list_active_maker_reward_markets right now, select a DIFFERENT top market from its ranked list (use yesTokenId or noTokenId), then call place_optimized_reward_order again on the new token. This is the required autonomous recovery per user policy — never ask the human for guidance."
           };
         }
 
@@ -1899,6 +2142,68 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } catch (error: any) {
         return { isError: true, content: [{ type: 'text' as const, text: `Failed to start watching scoring: ${error?.message}` }] };
       }
+    }
+
+    case 'get_balance_allowance': {
+      // High-level, actionable balance check for agents doing reward farming
+      return callWithFormat(async () => {
+        const sec = await getSec();
+        const assetType = (args.assetType || 'COLLATERAL').toUpperCase() as 'COLLATERAL' | 'CONDITIONAL';
+
+        let data: any;
+        try {
+          const balRes = await callWithRateLimitProtection(
+            () => sec.fetchBalanceAllowance({ assetType }),
+            'fetchBalanceAllowance'
+          );
+          if (!balRes.ok) {
+            return {
+              success: false, rateLimited: true, retryAfterMs: balRes.retryAfterMs,
+              message: balRes.message,
+              directive: "Rate limited checking balance. Wait before retrying get_balance_allowance or any placement."
+            };
+          }
+          data = balRes.data;
+        } catch (e: any) {
+          return {
+            success: false,
+            error: "Failed to fetch balance/allowance",
+            detail: e?.message || String(e),
+            directive: "You may need to run deploy_deposit_wallet first, or the wallet is not properly set up."
+          };
+        }
+
+        const rawBalance = data?.balance || '0';
+        const balance = parseFloat(rawBalance) / 1_000_000; // USDC 6 decimals (safe default for collateral)
+        const allowances = data?.allowances || {};
+
+        // Find the main CLOB-related allowance (usually the highest or a known exchange address)
+        const allowanceEntries = Object.entries(allowances);
+        const maxAllowance = allowanceEntries.length
+          ? Math.max(...allowanceEntries.map(([_, v]) => parseFloat(String(v)) / 1_000_000))
+          : 0;
+
+        const isCollateral = assetType === 'COLLATERAL';
+        const sufficient = isCollateral ? balance > 1 && maxAllowance > 10 : true; // heuristic
+
+        return {
+          success: true,
+          assetType,
+          balance: balance.toFixed(2),
+          balanceRaw: rawBalance,
+          maxAllowanceApprox: maxAllowance.toFixed(2),
+          sufficientForSmallOrders: sufficient,
+          nextSteps: sufficient
+            ? "Balance and allowance look usable for small maker orders."
+            : [
+                "1. If allowance is low: call approve_erc20 with the correct USDC token address and a large spender amount (or the CLOB proxy).",
+                "2. If balance is low: deposit USDC into your Polymarket deposit wallet (use deposit or the deposit wallet flow).",
+                "3. After approve/deposit: call update_balance_allowance({assetType: 'COLLATERAL'}) to sync.",
+                "4. Then retry place_maker_reward_order or place_optimized_reward_order."
+              ],
+          rawAllowances: Object.keys(allowances).length <= 3 ? allowances : "multiple spenders (truncated for size)"
+        };
+      }, F.formatGeneric, name);
     }
 
     case 'place_market_order':
