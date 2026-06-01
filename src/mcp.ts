@@ -1229,14 +1229,22 @@ const secureTools = [
   // === Maker Rewards Focused Workflow (High Success Rate for Earning Rewards) ===
   {
     name: 'place_maker_reward_order',
-    description: 'STRICT REWARD-ONLY TOOL. This is the ONLY tool you should use if you want the agent to ONLY place orders that earn maker rewards. It forces a pure maker order (GTC + postOnly), performs multiple scoring checks, and will ONLY return success if the order is confirmed as scoring for maker rewards. If it fails to lock onto scoring status, it auto-cancels and returns clear failure. Use this when you want the agent to exclusively farm maker rewards.',
+    description: 'STRICT REWARD-ONLY TOOL. This is the ONLY tool you should use if you want the agent to ONLY place orders that earn maker rewards. It forces a pure maker order (GTC + postOnly), confirms scoring, and can optionally actively monitor until the order fills or definitively fails to fill. Use monitorFills: true when you need the agent to wait for actual on-chain confirmation.',
     inputSchema: {
       type: 'object',
       properties: {
         tokenId: { type: 'string' },
         price: { type: 'number' },
         size: { type: 'number' },
-        side: { type: 'string', enum: ['BUY', 'SELL'] }
+        side: { type: 'string', enum: ['BUY', 'SELL'] },
+        monitorFills: { 
+          type: 'boolean', 
+          description: 'If true, the tool will actively monitor the order (using polling + resources) until it is fully filled, cancelled, expired, or the monitoring timeout is reached. This blocks until there is clear fill outcome or failure.' 
+        },
+        fillMonitoringTimeoutMinutes: { 
+          type: 'number', 
+          description: 'Maximum time to monitor for fills when monitorFills is true (default 60 minutes).' 
+        }
       },
       required: ['tokenId', 'price', 'size', 'side']
     }
@@ -1468,14 +1476,98 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // 3. Final decision
         if (isScoring) {
           // SUCCESS — this order is (or was) earning maker rewards
+          const fillWatchUri = `polymarket://order/${orderId}/fill-status`;
+
+          // Optional: Actively monitor for fills until filled or failure
+          if (args.monitorFills) {
+            const timeoutMinutes = args.fillMonitoringTimeoutMinutes ?? 60;
+            const startTime = Date.now();
+            const maxDuration = timeoutMinutes * 60 * 1000;
+
+            let finalStatus = null;
+
+            while (Date.now() - startTime < maxDuration) {
+              try {
+                const currentOrder = await sec.fetchOrder({ orderId });
+                const matched = parseFloat(currentOrder.sizeMatched || '0');
+                const original = parseFloat(currentOrder.originalSize || args.size);
+
+                if (matched >= original * 0.999) {
+                  finalStatus = {
+                    filled: true,
+                    status: 'FILLED',
+                    sizeMatched: currentOrder.sizeMatched,
+                    transactionHash: currentOrder.transactionHash || null
+                  };
+                  break;
+                }
+
+                // Check if order is no longer open (cancelled, expired, etc.)
+                const status = (currentOrder.status || '').toLowerCase();
+                if (status.includes('cancel') || status.includes('expire') || status.includes('reject')) {
+                  finalStatus = {
+                    filled: false,
+                    status: currentOrder.status || 'CLOSED',
+                    sizeMatched: currentOrder.sizeMatched,
+                    reason: 'Order no longer open (cancelled/expired/rejected)'
+                  };
+                  break;
+                }
+              } catch (e) {
+                // Transient error, continue monitoring
+              }
+
+              await new Promise(r => setTimeout(r, 15000)); // Poll every 15 seconds
+            }
+
+            if (!finalStatus) {
+              finalStatus = {
+                filled: false,
+                status: 'MONITORING_TIMEOUT',
+                reason: `Monitoring timed out after ${timeoutMinutes} minutes. Order may still be open.`
+              };
+            }
+
+            return {
+              success: true,
+              message: finalStatus.filled 
+                ? "Order filled and earned maker rewards." 
+                : "Order placed, confirmed scoring for rewards, but did not fill within monitoring window.",
+              orderId,
+              isEarningRewards: true,
+              fillOutcome: finalStatus,
+              fillWatchResource: fillWatchUri,
+              order: posted
+            };
+          }
+
+          // Default behavior (no fill monitoring) — just return current snapshot + guidance
+          let currentFillStatus = null;
+          try {
+            const latestOrder = await sec.fetchOrder({ orderId });
+            currentFillStatus = {
+              status: latestOrder.status || 'OPEN',
+              sizeMatched: latestOrder.sizeMatched || '0',
+              originalSize: latestOrder.originalSize || args.size,
+              isFilled: parseFloat(latestOrder.sizeMatched || '0') >= parseFloat(latestOrder.originalSize || args.size) * 0.999
+            };
+          } catch (e) {
+            currentFillStatus = { status: 'UNKNOWN', note: 'Could not fetch latest fill status yet.' };
+          }
+
           return {
             success: true,
             message: "Order successfully locked and is earning maker rewards.",
             orderId,
             isEarningRewards: true,
+            currentFillStatus,
+            fillWatchResource: fillWatchUri,
             order: posted,
             checkedAt: new Date(lastCheckedAt).toISOString(),
-            note: "This order was confirmed as scoring for maker rewards. This is the only type of order this tool will return as success."
+            monitoring: {
+              recommendation: "To get live confirmation of fills, call this tool again with monitorFills: true, or subscribe to the Fill Watch resource and/or use watch_order_until_filled.",
+              note: "Maker rewards are earned while the order is resting and scoring. Actual P&L is realized on fill."
+            }
           };
         } else {
           // FAILURE — did not lock onto scoring. Cancel and report cleanly.
@@ -1495,8 +1587,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             orderId,
             isEarningRewards: false,
             cancelStatus: cancelResult,
-            recommendation: "Try a different price, larger size, or different market with active rewards. Do not use this order for reward farming.",
-            note: "This tool only returns success when the order is confirmed as scoring for maker rewards."
+            recommendation: "Try a different price, larger size, or different market with active rewards. Use list_active_maker_reward_markets + validate_for_maker_rewards before placing.",
+            note: "This tool only returns success when the order is confirmed as scoring for maker rewards. No non-scoring orders are left open."
           };
         }
       }, F.formatGeneric, name);
