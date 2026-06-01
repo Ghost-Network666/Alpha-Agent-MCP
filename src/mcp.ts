@@ -11,7 +11,7 @@ import {
   UnsubscribeRequestSchema,
   ListResourceTemplatesRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getPublicClient, getSecureClient } from './lib.js';
+import { getPublicClient, getSecureClient, setupGaslessWallet } from './lib.js';
 import * as F from './formatters.js';
 import {
   placeLimitOrder as sportsPlaceLimitOrder,
@@ -666,7 +666,9 @@ const secureTools = [
         size: { type: 'number' },
         side: { type: 'string', enum: ['BUY', 'SELL'] },
         orderType: { type: 'string', enum: ['GTC', 'GTD', 'FOK', 'FAK'] },
-        postOnly: { type: 'boolean' }
+        postOnly: { type: 'boolean' },
+        builderCode: { type: 'string' },
+        expiration: { type: 'number', description: 'Unix timestamp (seconds) after which the order expires (GTD)' }
       },
       required: ['tokenId', 'price', 'size', 'side']
     }
@@ -678,10 +680,14 @@ const secureTools = [
       type: 'object',
       properties: {
         tokenId: { type: 'string' },
-        amount: { type: 'number' },
-        side: { type: 'string', enum: ['BUY', 'SELL'] }
+        side: { type: 'string', enum: ['BUY', 'SELL'] },
+        amount: { type: 'number', description: 'USD notional for BUY (use with orderType)' },
+        shares: { type: 'number', description: 'Shares for SELL (use with orderType)' },
+        orderType: { type: 'string', enum: ['FAK', 'FOK'], description: 'FAK (partial ok) or FOK (all or nothing)' },
+        maxSpend: { type: 'number', description: 'Optional max total spend (incl fees) for BUY' },
+        builderCode: { type: 'string' }
       },
-      required: ['tokenId', 'amount', 'side']
+      required: ['tokenId', 'side']
     }
   },
   {
@@ -758,13 +764,13 @@ const secureTools = [
   },
   {
     name: 'cancel_market_orders',
-    description: 'Cancel all orders for a specific market',
+    description: 'Cancel all orders for a specific token (or market)',
     inputSchema: {
       type: 'object',
       properties: {
-        market: { type: 'string' }
+        tokenId: { type: 'string' }
       },
-      required: ['market']
+      required: ['tokenId']
     }
   },
   {
@@ -794,6 +800,7 @@ const secureTools = [
     inputSchema: {
       type: 'object',
       properties: {
+        market: { type: 'array', items: { type: 'string' } },
         pageSize: { type: 'number' }
       }
     }
@@ -829,7 +836,7 @@ const secureTools = [
     inputSchema: {
       type: 'object',
       properties: {
-        market: { type: 'string' }
+        tokenId: { type: 'string' }
       }
     }
   },
@@ -864,12 +871,12 @@ const secureTools = [
   },
   {
     name: 'redeem_positions',
-    description: 'Redeem resolved positions (by conditionId or marketId)',
+    description: 'Redeem resolved positions (by marketId)',
     inputSchema: {
       type: 'object',
       properties: {
-        conditionId: { type: 'string' },
-        marketId: { type: 'string' }
+        marketId: { type: 'string' },
+        conditionId: { type: 'string' }
       }
     }
   },
@@ -942,8 +949,8 @@ const secureTools = [
   // Lower-level order posting (secure)
   {
     name: 'post_order',
-    description: 'Post a pre-signed order',
-    inputSchema: { type: 'object', properties: {} }
+    description: 'Post a pre-signed SignedOrder (the exact object returned by createLimitOrder on the secure client)',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: true }
   },
   {
     name: 'post_orders',
@@ -1192,15 +1199,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Secure tools — every response formatted. CTF actions use resolved tx card.
     case 'place_limit_order':
-      // Enforce GTC maker defaults for rewards eligibility (SDK method only)
-      // Use loose typing to match existing patterns in the codebase (SDK request types are internal)
-      // GTC is the default in the SDK — only pass orderType for GTD/FOK/FAK
-      const limitParams: any = { ...args };
-      if (args.orderType && args.orderType !== 'GTC') {
-        limitParams.orderType = args.orderType;
-      }
-      limitParams.postOnly = args.postOnly !== false;
-      return callWithFormat(async () => (await getSec()).placeLimitOrder(limitParams), F.formatOrderResponse, name);
+      return callWithFormat(async () => (await getSec()).placeLimitOrder(args), F.formatOrderResponse, name);
 
     case 'create_and_post_order':
       // The recommended tool for GTC maker orders with rewards eligibility.
@@ -1219,14 +1218,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'place_market_order':
       return callWithFormat(async () => (await getSec()).placeMarketOrder(args), F.formatOrderResponse, name);
     case 'sports_place_limit_order':
-      // Enforce GTC maker defaults for rewards eligibility (SDK method only)
-      // Use loose typing to match existing patterns in the codebase (SDK request types are internal)
-      const sportsLimitParams: any = { ...args };
-      if (args.orderType && args.orderType !== 'GTC') {
-        sportsLimitParams.orderType = args.orderType;
-      }
-      sportsLimitParams.postOnly = args.postOnly !== false;
-      return callWithFormat(async () => sportsPlaceLimitOrder(await getSec(), sportsLimitParams), F.formatOrderResponse, name);
+      return callWithFormat(async () => sportsPlaceLimitOrder(await getSec(), args), F.formatOrderResponse, name);
     case 'sports_place_market_order':
       return callWithFormat(async () => sportsPlaceMarketOrder(await getSec(), args), F.formatOrderResponse, name);
     case 'cancel_order':
@@ -1449,7 +1441,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'download_accounting_snapshot':
       return callWithFormat(async () => (await getSec()).downloadAccountingSnapshot(args), F.formatAccountingSnapshot, name);
     case 'setup_gasless_wallet':
-      return callWithFormat(async () => (await getSec()).setupGaslessWallet(), F.formatGaslessTx, name);
+      // Uses the factory wrapper which performs the required client replacement
+      return callWithFormat(() => setupGaslessWallet(), F.formatGeneric, name);
     case 'fetch_transaction':
       return callWithFormat(async () => (await getSec()).fetchTransaction(args), F.formatGaslessTx, name);
 
