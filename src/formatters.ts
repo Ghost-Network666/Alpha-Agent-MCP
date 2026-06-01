@@ -48,6 +48,56 @@ function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
   return out;
 }
 
+/** Robust date formatter. Handles seconds, milliseconds, ISO strings, and Date objects. */
+function formatDate(ts?: number | string | Date | null): string | undefined {
+  if (ts == null) return undefined;
+  let num: number;
+  if (ts instanceof Date) {
+    num = ts.getTime();
+  } else if (typeof ts === 'number') {
+    num = ts;
+  } else {
+    // Try parsing string (ISO or numeric)
+    const parsed = Date.parse(String(ts));
+    if (!isNaN(parsed)) return formatDate(parsed); // recurse with number
+    num = parseInt(String(ts), 10);
+  }
+  if (!num || isNaN(num)) return String(ts);
+
+  // Heuristic: if looks like seconds (typical Unix), convert to ms
+  if (num < 1_000_000_000_000) {
+    num = num * 1000;
+  }
+
+  const d = new Date(num);
+  if (isNaN(d.getTime())) return String(ts);
+
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} UTC`;
+}
+
+/** Builds a direct clickable Polygonscan transaction link when hash is present. */
+function formatTxLink(txHash?: string | null): string | undefined {
+  if (!txHash) return undefined;
+  const clean = String(txHash).trim();
+  if (!clean || clean.length < 10) return undefined;
+  return `https://polygonscan.com/tx/${clean}`;
+}
+
+/** Builds a direct clickable Polymarket market link. Prefers slug, falls back to condition/market id. */
+function formatMarketLink(slugOrId?: string | null, fallbackId?: string | null): string | undefined {
+  const id = slugOrId || fallbackId;
+  if (!id) return undefined;
+  const clean = String(id).trim();
+  if (!clean) return undefined;
+  // If it looks like a slug (contains letters/hyphens), use /market/ path
+  if (/[a-z-]/.test(clean)) {
+    return `https://polymarket.com/market/${clean}`;
+  }
+  // Otherwise treat as condition id or market id (Polymarket often supports direct)
+  return `https://polymarket.com/market/${clean}`;
+}
+
 /** Robustly extract Yes/No outcome tokenIds for trading.
  *  Prefers normalized SDK shape (outcomes.yes/no.tokenId), falls back to clobTokenIds array
  *  (index 0 = Yes, 1 = No for binary markets). Handles stringified clobTokenIds too.
@@ -102,14 +152,7 @@ function truncateAddress(addr?: string | null): string | undefined {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-function formatDate(ts?: number | string | Date | null): string | undefined {
-  if (ts == null) return undefined;
-  const d = ts instanceof Date ? ts : new Date(typeof ts === 'number' ? ts : String(ts));
-  if (isNaN(d.getTime())) return String(ts);
-  // "29 May 2026 14:32 UTC"
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return `${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()} ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} UTC`;
-}
+
 
 function formatDecimal(v?: string | number | null, decimals = 4): string | undefined {
   if (v == null) return undefined;
@@ -175,6 +218,10 @@ export function formatMarket(market: any): object {
     ?? market.noTokenId 
     ?? market.tokens?.[1]?.tokenId;
 
+  // Trading config / minimums (very useful for agents)
+  const minOrderSize = market.minimumOrderSize ?? market.trading?.minimumOrderSize ?? market.minOrderSize;
+  const minTickSize = market.minimumTickSize ?? market.trading?.minimumTickSize ?? market.tickSize ?? market.minTickSize;
+
   return omitUndefined({
     'Question': market.question,
     'Slug': market.slug,
@@ -186,6 +233,8 @@ export function formatMarket(market: any): object {
     'No TokenId': noTokenId,
     'Volume': formatDecimal(market.metrics?.volume),
     'Liquidity': formatDecimal(market.metrics?.liquidity),
+    'Min Order Size': formatDecimal(minOrderSize),
+    'Min Tick Size': formatDecimal(minTickSize),
     'Status': market.state?.closed ? 'CLOSED' : (market.state?.active ? 'OPEN' : 'RESOLVED'),
     'End Date': formatDate(market.state?.endDate),
     'Image': market.image,
@@ -309,6 +358,29 @@ export function formatOpenInterest(interest: OpenInterest[]): object {
   };
 }
 
+// ===================== Comments =====================
+
+export function formatComment(comment: any): object {
+  const c = comment as any;
+  const profile = c.profile || {};
+
+  return omitUndefined({
+    'Id': c.id,
+    'Body': c.body,
+    'Parent Type': c.parentEntityType,
+    'Parent Id': c.parentEntityID,
+    'Parent Comment Id': c.parentCommentID,
+    'User': truncateAddress(c.userAddress),
+    'Username': profile.pseudonym || profile.name,
+    'Created': formatDate(c.createdAt),
+    'Updated': formatDate(c.updatedAt),
+    'Reply Count': c.replyCount ?? undefined,
+    'Likes': c.likeCount ?? undefined,
+    'Media': c.media && c.media.length ? c.media.map((m: any) => m.url).filter(Boolean) : undefined,
+    'Positions': c.profile?.positions && c.profile.positions.length ? c.profile.positions : undefined,
+  });
+}
+
 export function formatMarketHolders(holders: MetaHolder[]): object {
   if (!holders || holders.length === 0) return { Holders: 'None' };
   return {
@@ -327,6 +399,9 @@ export function formatMarketHolders(holders: MetaHolder[]): object {
 // ===================== Trades =====================
 
 export function formatTrade(trade: Trade): object {
+  const txLink = formatTxLink(trade.transactionHash);
+  const marketLink = formatMarketLink(trade.slug, trade.market as any);
+
   return omitUndefined({
     'Title': trade.title,
     'Side': formatSide(trade.side),
@@ -335,7 +410,8 @@ export function formatTrade(trade: Trade): object {
     'Token Id': truncateAddress(trade.tokenId ?? trade.asset),
     'Wallet': truncateAddress(trade.wallet ?? trade.proxyWallet),
     'Timestamp': formatDate(trade.timestamp),
-    'Transaction Hash': truncateAddress(trade.transactionHash),
+    'Transaction': txLink || truncateAddress(trade.transactionHash),
+    'Market Link': marketLink,
     'Slug': trade.slug,
     'Outcome': trade.outcome,
   });
@@ -347,6 +423,11 @@ export function formatOrder(order: OpenOrder): object {
   const status = formatOrderStatus(order.status);
   const filled = order.sizeMatched ?? '0';
   const total = order.originalSize ?? order.size ?? '0';
+
+  const txHash = (order as any).transactionHash || (order as any).txHash || (order as any).transactionsHashes?.[0];
+  const txLink = formatTxLink(txHash);
+  const marketLink = formatMarketLink((order as any).slug, order.market);
+
   return omitUndefined({
     'Status': status,
     'Order Id': order.id,
@@ -356,9 +437,11 @@ export function formatOrder(order: OpenOrder): object {
     'Size': formatDecimal(total),
     'Filled': `${formatDecimal(filled)} / ${formatDecimal(total)}`,
     'Market': order.market,
+    'Market Link': marketLink,
     'Created': formatDate(order.createdAt),
     'Expires': formatDate(order.expiresAt ?? order.expiration),
     'Owner': truncateAddress(order.owner ?? order.makerAddress),
+    'Transaction': txLink || (txHash ? truncateAddress(txHash) : undefined),
   });
 }
 
@@ -389,17 +472,28 @@ export function formatOrderResponse(response: OrderResponse): object {
   const r = response as any;
   const status = formatOrderStatus(r.status);
   const txHash = r.transactionsHashes?.[0] || r.transactionHash;
-  const link = txHash
-    ? `https://polygonscan.com/tx/${txHash}`
-    : (r.status === 'live' || r.status === 'unmatched' ? 'Not yet settled on-chain' : 'Pending — no tx hash yet');
+  const txLink = formatTxLink(txHash);
+
+  const confirm = txLink
+    ? txLink
+    : (r.status === 'live' || r.status === 'unmatched' || r.status === 'open' ? 'Not yet settled on-chain (resting maker order)' : 'Pending — no tx hash yet');
+
+  const orderId = r.orderId;
+  const watchResource = orderId ? `polymarket://order/${orderId}/fill-status` : undefined;
+  const marketLink = formatMarketLink(r.slug, r.market || r.conditionId);
+
   return omitUndefined({
     'Status': status,
-    'Order Id': r.orderId,
+    'Order Id': orderId,
     'Making Amount': formatDecimal(r.makingAmount),
     'Taking Amount': formatDecimal(r.takingAmount),
     'Filled': r.tradeIds?.length ? `${r.tradeIds.length} trades` : '0 / 1',
-    'Tx Hash': truncateAddress(txHash),
-    'Confirm': link,
+    'Transaction': txLink || truncateAddress(txHash),
+    'Confirm': confirm,
+    'Market Link': marketLink,
+    // Auto-registered fill watch — every successful placement starts this
+    'Fill Watch': watchResource,
+    'Note': watchResource ? 'Subscribe to Fill Watch resource for live notifications when this order fills.' : undefined,
   });
 }
 
@@ -414,6 +508,41 @@ export function formatCancelResponse(response: CancelOrdersResponse): object {
   return omitUndefined({
     'Canceled': response.canceled?.length ? response.canceled : 'None',
     'Not Canceled': Object.keys(response.notCanceled || {}).length ? response.notCanceled : 'None',
+  });
+}
+
+/** Formatter for the dedicated per-order fill watch resource */
+export function formatOrderFillWatch(order: any, watchedOrderId: string): object {
+  if (!order) {
+    return {
+      'Order Id': watchedOrderId,
+      'Status': '⏳ WATCHING',
+      'Message': 'Order not found in open orders yet (may be newly placed or already filled). Watching for updates...',
+      'Resource': `polymarket://order/${watchedOrderId}/fill-status`,
+    };
+  }
+  const o = order as any;
+  const originalSize = o.originalSize ?? o.size ?? o.makingAmount ?? '0';
+  const matched = o.sizeMatched ?? o.filledSize ?? '0';
+  const isFilled = parseFloat(matched) >= parseFloat(originalSize) * 0.999;
+
+  const txHash = o.transactionHash || (o.transactionsHashes && o.transactionsHashes[0]);
+  const txLink = formatTxLink(txHash);
+  const marketLink = formatMarketLink(o.slug, o.market || o.conditionId);
+
+  return omitUndefined({
+    'Order Id': o.id || o.orderId || watchedOrderId,
+    'Status': isFilled ? '✅ FULLY FILLED' : (parseFloat(matched) > 0 ? '🔄 PARTIALLY FILLED' : '⏳ OPEN — watching'),
+    'Side': o.side,
+    'Price': formatPriceDisplay(o.price),
+    'Original Size': formatDecimal(originalSize),
+    'Filled Size': formatDecimal(matched),
+    'Remaining': formatDecimal(Math.max(0, parseFloat(originalSize) - parseFloat(matched))),
+    'Transaction': txLink || truncateAddress(txHash),
+    'Confirm': txLink || (isFilled ? 'Filled on-chain' : 'Watching for fill (no settlement tx yet)'),
+    'Market Link': marketLink,
+    'Last Update': formatDate(o.timestamp || o.lastUpdate || o.createdAt),
+    'Resource': `polymarket://order/${watchedOrderId}/fill-status`,
   });
 }
 
@@ -543,17 +672,20 @@ export function formatPublicProfile(profile: PublicProfile): object {
 // ===================== Reward Tracking (Viewing Only) =====================
 
 export function formatCurrentReward(reward: CurrentReward): object {
+  const configs = reward.rewardsConfig?.map(c => ({
+    'Payout Asset': c.assetAddress,
+    'Rate Per Day': formatDecimal(c.ratePerDay),
+    'Total Program Rewards': formatDecimal(c.totalRewards),
+    'Start': formatDate(c.startDate),
+    'End': formatDate(c.endDate),
+  })) || [];
+
   return omitUndefined({
     'Condition Id': reward.conditionId,
-    'Min Size': formatDecimal(reward.rewardsMinSize),
-    'Max Spread': reward.rewardsMaxSpread,
-    'Configs': reward.rewardsConfig?.map(c => ({
-      'Asset': c.assetAddress,
-      'Rate Per Day': formatDecimal(c.ratePerDay),
-      'Total Rewards': formatDecimal(c.totalRewards),
-      'Start': formatDate(c.startDate),
-      'End': formatDate(c.endDate),
-    })) || 'None',
+    'Min Order Size (to qualify)': formatDecimal(reward.rewardsMinSize),
+    'Max Spread Allowed': reward.rewardsMaxSpread,
+    'Reward Program Details': configs.length ? configs : 'None',
+    'Note for Agents': 'Only GTC + postOnly (maker) orders that meet the Min Size and Max Spread can score for these rewards.',
   });
 }
 
@@ -676,10 +808,14 @@ export function formatBuilderVolume(entry: BuilderVolumeEntry): object {
 export function formatOrderScoring(data: any): object {
   if (data == null) return { 'Scoring': 'None' };
 
-  // Single boolean case (some SDK responses)
+  // Single boolean case
   if (typeof data === 'boolean') {
     return {
-      'Scoring Status': data ? '✅ Eligible (scoring for maker rewards)' : '❌ Not scoring',
+      'Scoring Status': data ? '✅ Currently SCORING for maker rewards' : '❌ NOT scoring for rewards',
+      'Recommendation': data 
+        ? 'This order is earning maker rewards right now. Keep it resting (GTC + postOnly recommended).'
+        : 'This order is not currently scoring. Consider cancelling if you only want to place orders that earn rewards.',
+      'Important': 'Maker reward scoring is determined by Polymarket after the order is live. It can change over time even for the same order.'
     };
   }
 
@@ -687,9 +823,10 @@ export function formatOrderScoring(data: any): object {
   if (typeof data === 'object' && !Array.isArray(data)) {
     const entries = Object.entries(data).map(([orderId, isScoring]) => ({
       'Order Id': orderId,
-      'Scoring Status': isScoring ? '✅ Eligible for maker rewards' : '❌ Ineligible',
+      'Scoring Status': isScoring ? '✅ Currently SCORING for maker rewards' : '❌ NOT scoring',
+      'Action': isScoring ? 'Keep the order' : 'Consider cancelling',
     }));
-    return entries.length === 1 ? entries[0] : { 'Order Scoring': entries };
+    return { 'Order Scoring Results': entries };
   }
 
   // Object with orderId + status
@@ -697,7 +834,10 @@ export function formatOrderScoring(data: any): object {
     const status = data.scoring ?? data.isScoring ?? data.eligible;
     return {
       'Order Id': data.orderId,
-      'Scoring Status': status ? '✅ Eligible for maker rewards (GTC postOnly)' : '❌ Ineligible',
+      'Scoring Status': status ? '✅ Currently SCORING for maker rewards (GTC postOnly)' : '❌ NOT scoring for rewards',
+      'Recommendation': status 
+        ? 'Good — this order is earning rewards.'
+        : 'Not scoring. Cancel if your goal is only reward-earning orders.',
     };
   }
 
@@ -739,6 +879,10 @@ export function formatMarketInfo(info: MarketInfo): object {
   const anyInfo = info as any;
   const tok = extractOutcomeTokens(anyInfo);
 
+  // Include trading minimums when available
+  const minOrder = (info as any).minimumOrderSize ?? (info as any).minOrderSize;
+  const minTick = (info as any).minimumTickSize ?? (info as any).tickSize ?? (info as any).minTickSize;
+
   return omitUndefined({
     'Market Id': info.marketId,
     'Condition Id': info.conditionId,
@@ -753,6 +897,8 @@ export function formatMarketInfo(info: MarketInfo): object {
     'Yes Token Id': tok.yes,
     'No Token Id': tok.no,
     'Token Ids': tok.tokenIds && tok.tokenIds.length > 0 ? tok.tokenIds : undefined,
+    'Min Order Size': formatDecimal(minOrder),
+    'Min Tick Size': formatDecimal(minTick),
   });
 }
 

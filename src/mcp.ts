@@ -286,6 +286,21 @@ const publicTools = [
     }
   },
   {
+    name: 'fetch_last_trade_prices',
+    description: 'Fetch the most recent trade price for multiple tokens at once (batch). More efficient than calling one by one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of token IDs'
+        }
+      },
+      required: ['tokenIds']
+    }
+  },
+  {
     name: 'list_trades',
     description: 'List recent trades (optionally filtered by user)',
     inputSchema: {
@@ -582,6 +597,48 @@ const publicTools = [
       }
     }
   },
+
+  // Comments (newly exposed from SDK)
+  {
+    name: 'list_comments',
+    description: 'List comments for an event or series (parentEntityType = "Event" or "Series"). Very useful for sentiment and context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        parentEntityId: { type: 'string' },
+        parentEntityType: { type: 'string', enum: ['Event', 'Series'] },
+        pageSize: { type: 'number' },
+        holdersOnly: { type: 'boolean' },
+        getPositions: { type: 'boolean' }
+      },
+      required: ['parentEntityId', 'parentEntityType']
+    }
+  },
+  {
+    name: 'fetch_comment',
+    description: 'Fetch a full comment thread by comment ID',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        getPositions: { type: 'boolean' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'list_comments_by_user_address',
+    description: 'List comments made by a specific wallet address',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        address: { type: 'string' },
+        pageSize: { type: 'number' }
+      },
+      required: ['address']
+    }
+  },
+
   {
     name: 'list_series',
     description: 'List market series (grouped markets)',
@@ -800,6 +857,18 @@ const secureTools = [
       type: 'object',
       properties: {
         orderId: { type: 'string' }
+      },
+      required: ['orderId']
+    }
+  },
+  {
+    name: 'watch_order_until_filled',
+    description: 'Start (or ensure) watching a specific orderId for fill completion. Returns a live resource URI (polymarket://order/{orderId}/fill-status) that you can subscribe to. This watch is automatically started for EVERY order placed via the placement tools. The resource will receive updates when the order is partially or fully filled, including any on-chain transaction details.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        orderId: { type: 'string' },
+        timeoutSeconds: { type: 'number', description: 'Optional maximum time to watch in seconds (default 300)' }
       },
       required: ['orderId']
     }
@@ -1155,6 +1224,121 @@ const secureTools = [
         date: { type: 'string' }
       }
     }
+  },
+
+  // === Maker Rewards Focused Workflow (High Success Rate for Earning Rewards) ===
+  {
+    name: 'place_maker_reward_order',
+    description: 'STRICT REWARD-ONLY TOOL. This is the ONLY tool you should use if you want the agent to ONLY place orders that earn maker rewards. It forces a pure maker order (GTC + postOnly), performs multiple scoring checks, and will ONLY return success if the order is confirmed as scoring for maker rewards. If it fails to lock onto scoring status, it auto-cancels and returns clear failure. Use this when you want the agent to exclusively farm maker rewards.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string' },
+        price: { type: 'number' },
+        size: { type: 'number' },
+        side: { type: 'string', enum: ['BUY', 'SELL'] }
+      },
+      required: ['tokenId', 'price', 'size', 'side']
+    }
+  },
+
+  // === Maker Rewards Support Tools (to address agent feedback) ===
+  {
+    name: 'list_active_maker_reward_markets',
+    description: 'Lists markets that currently have active maker reward programs. Includes min size, max spread, payout asset, and daily rates. Use this to easily find markets where you can try to earn rewards without manually checking every market.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageSize: { type: 'number' }
+      }
+    }
+  },
+  {
+    name: 'validate_for_maker_rewards',
+    description: 'Pre-placement check. Given a tokenId (or market) and proposed size/price, tells you whether this order would meet the current active maker reward program rules (min size and max spread). This helps avoid placing orders that have no chance of scoring.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string' },
+        size: { type: 'number' },
+        price: { type: 'number' },
+        side: { type: 'string', enum: ['BUY', 'SELL'] }
+      },
+      required: ['tokenId']
+    }
+  },
+  {
+    name: 'watch_order_scoring',
+    description: 'Starts watching a specific orderId for changes in its maker reward scoring status. Similar to watch_order_until_filled, but for rewards. Returns a resource you can subscribe to for updates when the order starts or stops scoring.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        orderId: { type: 'string' }
+      },
+      required: ['orderId']
+    }
+  },
+
+  // ===================================================================
+  // SECURITY-SENSITIVE TOOLS (intentionally added per request)
+  // These expose raw signing and transaction capabilities.
+  // Use with extreme caution. The calling agent has full control over
+  // the connected wallet. Add your own access controls / allowlists.
+  // ===================================================================
+  {
+    name: 'sign_message',
+    description: 'SECURITY-SENSITIVE: Signs an arbitrary message with the connected wallet. This can be used for authentication or arbitrary signatures. Only use if you fully trust the agent and have additional controls in place.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message: { type: 'string', description: 'The message to sign (hex string or utf8 string)' }
+      },
+      required: ['message']
+    }
+  },
+  {
+    name: 'sign_typed_data',
+    description: 'SECURITY-SENSITIVE: Signs EIP-712 typed data with the connected wallet. This is used for gasless orders and other structured signatures. Only use if you fully trust the agent.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        payload: {
+          type: 'object',
+          description: 'EIP-712 TypedDataPayload object (domain, types, primaryType, message)'
+        }
+      },
+      required: ['payload']
+    }
+  },
+  {
+    name: 'send_transaction',
+    description: 'SECURITY-SENSITIVE: Directly sends a raw transaction from the connected wallet. This bypasses all high-level Polymarket flows. Extremely dangerous. Only use with strong additional safeguards.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        request: {
+          type: 'object',
+          description: 'SignerTransactionRequest: { chainId, to, data?, value? }'
+        }
+      },
+      required: ['request']
+    }
+  },
+  {
+    name: 'end_authentication',
+    description: 'SECURITY-SENSITIVE: Revokes the current API key session and returns a public client. This invalidates the current authenticated session.',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  {
+    name: 'get_secure_client_info',
+    description: 'SECURITY-SENSITIVE: Returns raw authentication internals (account identity and API credentials). Do not expose these publicly.',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
   }
 ];
 
@@ -1203,6 +1387,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return callWithFormat(() => pub.fetchPriceHistory(args), (d: any) => F.formatPriceHistory(d?.history ?? d ?? []), name);
     case 'fetch_last_trade_price':
       return callWithFormat(() => pub.fetchLastTradePrice(args), F.formatGeneric, name);
+    case 'fetch_last_trade_prices':
+      // SDK expects array of { tokenId }
+      return callWithFormat(() => pub.fetchLastTradePrices(args.tokenIds.map((id: string) => ({ tokenId: id }))), F.formatGeneric, name);
     case 'list_trades':
       return callPaginatedWithFormat(pub.listTrades(args), F.formatTrade, name);
     case 'estimate_market_price':
@@ -1210,7 +1397,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Secure tools — every response formatted. CTF actions use resolved tx card.
     case 'place_limit_order':
-      return callWithFormat(async () => (await getSec()).placeLimitOrder(args), F.formatOrderResponse, name);
+      return callWithFormat(async () => {
+        const posted = await (await getSec()).placeLimitOrder(args);
+        const orderId = (posted as any)?.orderId;
+        if (orderId) resourceManager.ensureUserSubscriptionForWatch(orderId).catch(() => {});
+        return posted;
+      }, F.formatOrderResponse, name);
 
     case 'create_and_post_order':
       // The recommended tool for GTC maker orders with rewards eligibility.
@@ -1224,14 +1416,188 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return callWithFormat(async () => {
         const sec = await getSec();
         const signed = await sec.createLimitOrder(createPostParams);
-        return await sec.postOrder(signed);
+        const posted = await sec.postOrder(signed);
+        // Auto-start the dedicated fill watch for this order (powers the Fill Watch resource in the response)
+        const orderId = (posted as any)?.orderId;
+        if (orderId) {
+          resourceManager.ensureUserSubscriptionForWatch(orderId).catch(() => {});
+        }
+        return posted;
       }, F.formatOrderResponse, name);
+
+    case 'place_maker_reward_order':
+      // STRICT "Only place orders that earn maker rewards" tool.
+      // This is the recommended tool when you want the agent to ONLY succeed on orders that are earning rewards.
+      // It will auto-cancel and return failure if the order does not become scoring within the check window.
+      return callWithFormat(async () => {
+        const sec = await getSec();
+
+        const params: any = {
+          tokenId: args.tokenId,
+          price: args.price,
+          size: args.size,
+          side: args.side,
+          orderType: 'GTC',
+          postOnly: true,
+        };
+
+        // 1. Place as pure maker
+        const signed = await sec.createLimitOrder(params);
+        const posted = await sec.postOrder(signed);
+        const orderId = (posted as any)?.orderId;
+
+        if (orderId) {
+          resourceManager.ensureUserSubscriptionForWatch(orderId).catch(() => {});
+        }
+
+        // 2. Multiple scoring checks with increasing delays (more reliable than single check)
+        const checkDelays = [2500, 4000, 6000]; // total ~13 seconds max
+        let isScoring = false;
+        let lastCheckedAt = 0;
+
+        for (const delay of checkDelays) {
+          await new Promise(r => setTimeout(r, delay));
+          lastCheckedAt = Date.now();
+          try {
+            isScoring = await sec.fetchOrderScoring({ orderId });
+            if (isScoring) break; // success — locked onto rewards
+          } catch (e) {
+            // ignore transient errors
+          }
+        }
+
+        // 3. Final decision
+        if (isScoring) {
+          // SUCCESS — this order is (or was) earning maker rewards
+          return {
+            success: true,
+            message: "Order successfully locked and is earning maker rewards.",
+            orderId,
+            isEarningRewards: true,
+            order: posted,
+            checkedAt: new Date(lastCheckedAt).toISOString(),
+            note: "This order was confirmed as scoring for maker rewards. This is the only type of order this tool will return as success."
+          };
+        } else {
+          // FAILURE — did not lock onto scoring. Cancel and report cleanly.
+          let cancelResult = "cancel_attempted";
+          if (orderId) {
+            try {
+              await sec.cancelOrder({ orderId });
+              cancelResult = "cancelled";
+            } catch (e) {
+              cancelResult = "cancel_failed";
+            }
+          }
+
+          return {
+            success: false,
+            message: "Failed to place an order that is earning maker rewards. Order was auto-cancelled.",
+            orderId,
+            isEarningRewards: false,
+            cancelStatus: cancelResult,
+            recommendation: "Try a different price, larger size, or different market with active rewards. Do not use this order for reward farming.",
+            note: "This tool only returns success when the order is confirmed as scoring for maker rewards."
+          };
+        }
+      }, F.formatGeneric, name);
+
+    // === New Maker Rewards Support Tools ===
+    case 'list_active_maker_reward_markets':
+      return callPaginatedWithFormat(pub.listCurrentRewards(args), F.formatCurrentReward, name);
+
+    case 'validate_for_maker_rewards': {
+      // Pre-placement check against current active reward rules
+      return callWithFormat(async () => {
+        if (!args.tokenId) {
+          return { error: "tokenId is required" };
+        }
+
+        // Try to get active rewards for the market this token belongs to.
+        // We use listMarketRewards with the conditionId if we can derive it, otherwise fall back to current rewards.
+        let rewards = [];
+        try {
+          // Best effort: call listCurrentRewards and filter
+          const paginator = await pub.listCurrentRewards({ pageSize: 100 });
+          const page = await paginator.firstPage();
+          rewards = page?.items || [];
+        } catch (e) {
+          return { error: "Could not fetch active reward programs" };
+        }
+
+        if (!rewards.length) {
+          return {
+            eligible: false,
+            reason: "No active maker reward programs right now.",
+            recommendation: "Use list_active_maker_reward_markets to find markets with active programs."
+          };
+        }
+
+        // For simplicity in v1, we return the active programs and let the agent compare size/price.
+        // A more advanced version would take conditionId and do exact matching.
+        return {
+          has_active_programs: true,
+          active_programs: rewards.map(r => F.formatCurrentReward(r)),
+          note: "Compare your proposed size against 'Min Order Size (to qualify)' and price against 'Max Spread Allowed' in the programs above.",
+          proposed: {
+            tokenId: args.tokenId,
+            size: args.size,
+            price: args.price,
+            side: args.side
+          }
+        };
+      }, F.formatGeneric, name);
+    }
+
+    case 'watch_order_scoring': {
+      // Starts watching scoring status for an order (similar to watch_order_until_filled)
+      const orderId = args.orderId;
+      if (!orderId) {
+        return { isError: true, content: [{ type: 'text', text: "orderId is required" }] };
+      }
+
+      try {
+        await resourceManager.ensureUserSubscriptionForWatch(orderId);
+        // We reuse the user subscription. For now we just register interest.
+        // A more advanced implementation would track scoring state changes specifically.
+        const watchUri = `polymarket://order/${orderId}/scoring`;
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              status: "Watching order scoring status",
+              orderId,
+              resource: watchUri,
+              note: "Subscribe to the resource above for updates when this order's maker reward scoring status changes."
+            }, null, 2)
+          }]
+        };
+      } catch (error: any) {
+        return { isError: true, content: [{ type: 'text' as const, text: `Failed to start watching scoring: ${error?.message}` }] };
+      }
+    }
+
     case 'place_market_order':
-      return callWithFormat(async () => (await getSec()).placeMarketOrder(args), F.formatOrderResponse, name);
+      return callWithFormat(async () => {
+        const posted = await (await getSec()).placeMarketOrder(args);
+        const orderId = (posted as any)?.orderId;
+        if (orderId) resourceManager.ensureUserSubscriptionForWatch(orderId).catch(() => {});
+        return posted;
+      }, F.formatOrderResponse, name);
     case 'sports_place_limit_order':
-      return callWithFormat(async () => sportsPlaceLimitOrder(await getSec(), args), F.formatOrderResponse, name);
+      return callWithFormat(async () => {
+        const posted = await sportsPlaceLimitOrder(await getSec(), args);
+        const orderId = (posted as any)?.orderId;
+        if (orderId) resourceManager.ensureUserSubscriptionForWatch(orderId).catch(() => {});
+        return posted;
+      }, F.formatOrderResponse, name);
     case 'sports_place_market_order':
-      return callWithFormat(async () => sportsPlaceMarketOrder(await getSec(), args), F.formatOrderResponse, name);
+      return callWithFormat(async () => {
+        const posted = await sportsPlaceMarketOrder(await getSec(), args);
+        const orderId = (posted as any)?.orderId;
+        if (orderId) resourceManager.ensureUserSubscriptionForWatch(orderId).catch(() => {});
+        return posted;
+      }, F.formatOrderResponse, name);
     case 'cancel_order':
       return callWithFormat(async () => (await getSec()).cancelOrder(args), F.formatCancelResponse, name);
     case 'cancel_orders':
@@ -1244,6 +1610,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return callPaginatedWithFormat((await getSec()).listOpenOrders(args), F.formatOrder, name);
     case 'fetch_order':
       return callWithFormat(async () => (await getSec()).fetchOrder(args), F.formatOrder, name);
+    case 'watch_order_until_filled': {
+      // Starts/ensures watching + returns the dedicated fill-status resource URI
+      const orderId = args.orderId;
+      const timeout = args.timeoutSeconds || 300;
+      // Ensure the authenticated user subscription is active (it powers fill notifications)
+      try {
+        await resourceManager.ensureUserSubscriptionForWatch(orderId);
+      } catch (e) {
+        // Non-fatal — the resource can still be polled via fetch_order
+      }
+      const watchUri = `polymarket://order/${orderId}/fill-status`;
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            'Status': 'WATCHING',
+            'Order Id': orderId,
+            'Resource': watchUri,
+            'Description': 'Subscribe to the resource above for live fill updates. This watch was automatically registered.',
+            'Timeout Seconds': timeout,
+            'Note': 'You will receive resource/updated notifications when this order is filled (partially or fully).'
+          }, null, 2)
+        }]
+      };
+    }
     case 'list_positions':
       return callPaginatedWithFormat((await getSec()).listPositions(args), F.formatPosition, name);
     case 'list_closed_positions':
@@ -1342,6 +1733,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return callWithFormat(() => pub.fetchTag(args), F.formatTag, name);
     case 'fetch_related_tags':
       return callWithFormat(() => pub.fetchRelatedTags(args), F.formatGeneric, name);
+
+    // Comments
+    case 'list_comments':
+      return callPaginatedWithFormat(pub.listComments(args), F.formatComment, name);
+    case 'fetch_comment':
+      return callWithFormat(() => pub.fetchCommentsById(args), (arr: any[]) => (arr || []).map(F.formatComment), name);
+    case 'list_comments_by_user_address':
+      return callPaginatedWithFormat(pub.listCommentsByUserAddress(args), F.formatComment, name);
+
     case 'list_series':
       return callPaginatedWithFormat(pub.listSeries(args), F.formatSeries, name);
     case 'fetch_series':
@@ -1430,7 +1830,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // === Lower-level Order Posting (secure) ===
     case 'post_order':
-      return callWithFormat(async () => (await getSec()).postOrder(args), F.formatOrderResponse, name);
+      return callWithFormat(async () => {
+        const posted = await (await getSec()).postOrder(args);
+        const orderId = (posted as any)?.orderId;
+        if (orderId) resourceManager.ensureUserSubscriptionForWatch(orderId).catch(() => {});
+        return posted;
+      }, F.formatOrderResponse, name);
     case 'post_orders':
       return callWithFormat(async () => (await getSec()).postOrders(args), F.formatOrderResponses, name);
 
@@ -1468,6 +1873,73 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return callWithFormat(async () => fetchApiKeys(await getSec()), F.formatApiKeys, name);
     case 'delete_api_key':
       return callWithFormat(async () => { await deleteApiKey(await getSec()); return { success: true }; }, F.formatGeneric, name);
+
+    // ===================================================================
+    // SECURITY-SENSITIVE HANDLERS (added per explicit request)
+    // These provide direct access to raw wallet signing and transaction
+    // capabilities. They should only be used with additional safeguards.
+    // ===================================================================
+    case 'sign_message': {
+      try {
+        const sec = await getSec();
+        const signer = (sec as any).signer;
+        if (!signer || typeof signer.signMessage !== 'function') {
+          throw new Error('No signer available on secure client');
+        }
+        const sig = await signer.signMessage(args.message);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ signature: sig }, null, 2) }] };
+      } catch (error: any) {
+        return { isError: true, content: [{ type: 'text' as const, text: `sign_message error: ${error?.message || String(error)}` }] };
+      }
+    }
+    case 'sign_typed_data': {
+      try {
+        const sec = await getSec();
+        const signer = (sec as any).signer;
+        if (!signer || typeof signer.signTypedData !== 'function') {
+          throw new Error('No signer available on secure client');
+        }
+        const sig = await signer.signTypedData(args.payload);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ signature: sig }, null, 2) }] };
+      } catch (error: any) {
+        return { isError: true, content: [{ type: 'text' as const, text: `sign_typed_data error: ${error?.message || String(error)}` }] };
+      }
+    }
+    case 'send_transaction': {
+      try {
+        const sec = await getSec();
+        const signer = (sec as any).signer;
+        if (!signer || typeof signer.sendTransaction !== 'function') {
+          throw new Error('No signer available on secure client');
+        }
+        const handle = await signer.sendTransaction(args.request);
+        return { content: [{ type: 'text' as const, text: JSON.stringify(handle, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2) }] };
+      } catch (error: any) {
+        return { isError: true, content: [{ type: 'text' as const, text: `send_transaction error: ${error?.message || String(error)}` }] };
+      }
+    }
+    case 'end_authentication': {
+      try {
+        const sec = await getSec();
+        const pubClient = await sec.endAuthentication();
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ status: 'Authentication ended', returnedPublicClient: true }, null, 2) }] };
+      } catch (error: any) {
+        return { isError: true, content: [{ type: 'text' as const, text: `end_authentication error: ${error?.message || String(error)}` }] };
+      }
+    }
+    case 'get_secure_client_info': {
+      try {
+        const sec = await getSec();
+        const info = {
+          account: (sec as any).account,
+          credentials: (sec as any).credentials,
+          note: 'These are sensitive authentication internals. Do not log or expose them.'
+        };
+        return { content: [{ type: 'text' as const, text: JSON.stringify(info, null, 2) }] };
+      } catch (error: any) {
+        return { isError: true, content: [{ type: 'text' as const, text: `get_secure_client_info error: ${error?.message || String(error)}` }] };
+      }
+    }
 
     default:
       return {

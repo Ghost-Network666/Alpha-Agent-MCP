@@ -51,6 +51,12 @@ export const RESOURCE_TEMPLATES = [
     description: 'Recent account activity (snapshot; subscribe for updates).',
     mimeType: 'application/json',
   },
+  {
+    uriTemplate: 'polymarket://order/{orderId}/fill-status',
+    name: 'Order Fill Watch',
+    description: 'Live fill status for a specific order. Subscribe to receive notifications when the order is partially or fully filled. Automatically started for every order placed via placement tools.',
+    mimeType: 'application/json',
+  },
 ];
 
 // Static top-level resources
@@ -97,6 +103,9 @@ export class PolymarketResourceManager {
   private marketSubs = new Map<string, ActiveMarketSub>(); // key = tokenId
   private userSub: ActiveUserSub | null = null;
 
+  // Per-order fill watches (powered by the single user WS)
+  private watchedOrders: Set<string> = new Set<string>();
+
   constructor(
     server: Server,
     getPub: () => PublicClient,
@@ -126,6 +135,11 @@ export class PolymarketResourceManager {
         return { type: 'markets', subPath: `leaderboard/${parts[2]}` };
       }
       return { type: 'markets' };
+    }
+    if (parts[0] === 'order' && parts.length >= 2) {
+      const orderId = parts[1];
+      const subPath = parts[2]; // 'fill-status' or undefined
+      return { type: 'order', tokenId: orderId, subPath }; // reuse tokenId field for orderId for simplicity
     }
     return null;
   }
@@ -163,6 +177,16 @@ export class PolymarketResourceManager {
       logWs('Started user resource subscription');
     }
     this.userSub.refCount++;
+  }
+
+  /**
+   * Public method for watch_order_until_filled tool and auto-placement integration.
+   * Ensures the authenticated user channel is running (which delivers order/trade events for fills).
+   */
+  public async ensureUserSubscriptionForWatch(orderId: string): Promise<void> {
+    this.watchedOrders.add(orderId);
+    await this.ensureUserSubscription(`polymarket://order/${orderId}/fill-status`).catch(() => {});
+    logWs('Order watch activated via tool/placement', { orderId: orderId.slice(0, 12) + '...' });
   }
 
   private async releaseMarketSubscription(tokenId: string): Promise<void> {
@@ -216,6 +240,24 @@ export class PolymarketResourceManager {
     if (event.type === 'order' || event.type === 'trade' || event.type === 'fill') {
       notify('polymarket://user/orders');
       notify('polymarket://user/activity');
+
+      // === Per-order fill watch notifications ===
+      const orderIdFromEvent = event?.payload?.id || event?.payload?.orderId || event?.id;
+      const makerOrders = event?.payload?.maker_orders || event?.makerOrders || [];
+
+      const matchedOrderIds = new Set<string>();
+      if (orderIdFromEvent) matchedOrderIds.add(String(orderIdFromEvent));
+      for (const mo of makerOrders) {
+        if (mo?.orderId) matchedOrderIds.add(String(mo.orderId));
+      }
+
+      for (const oid of matchedOrderIds) {
+        if (this.watchedOrders.has(oid)) {
+          const watchUri = `polymarket://order/${oid}/fill-status`;
+          notify(watchUri);
+          logWs('Fill update detected for watched order', { orderId: oid });
+        }
+      }
     }
     if (event.type === 'position' || event.type === 'balance') {
       notify('polymarket://user/positions');
@@ -387,6 +429,26 @@ export class PolymarketResourceManager {
         throw new Error(`Unknown user resource: ${uri}`);
       }
 
+      case 'order': {
+        const orderId = parsed.tokenId!; // holds the orderId in this context
+        const sec = await this.getSec();
+        let order: any = null;
+        try {
+          order = await sec.fetchOrder({ orderId });
+        } catch {
+          // order may be filled and moved out of open orders, or not visible yet
+        }
+
+        const formatted = F.formatOrderFillWatch(order, orderId);
+        return {
+          contents: [{
+            uri,
+            mimeType: 'application/json',
+            text: JSON.stringify(formatted, null, 2),
+          }],
+        };
+      }
+
       default:
         throw new Error(`Unsupported resource: ${uri}`);
     }
@@ -411,6 +473,11 @@ export class PolymarketResourceManager {
       } else if (this.isUserResource(parsed.type, parsed.subPath)) {
         // user resources require auth
         await this.ensureUserSubscription(uri);
+      } else if (parsed.type === 'order' && parsed.tokenId) {
+        this.watchedOrders = this.watchedOrders || new Set<string>();
+        this.watchedOrders.add(parsed.tokenId);
+        await this.ensureUserSubscription(uri).catch(() => {});
+        logWs('Order fill watch registered', { orderId: parsed.tokenId });
       }
       // markets list, leaderboards etc. are snapshot-only; subscription is accepted but produces infrequent/no updates
       logWs('Resource subscribed', { uri });
@@ -433,6 +500,9 @@ export class PolymarketResourceManager {
       await this.releaseMarketSubscription(parsed.tokenId);
     } else if (parsed.type === 'user') {
       await this.releaseUserSubscription();
+    } else if (parsed.type === 'order') {
+      // No dedicated WS per order — powered by the shared user subscription
+      this.watchedOrders?.delete(parsed.tokenId!);
     }
     logWs('Resource unsubscribed', { uri });
   }
