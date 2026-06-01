@@ -247,13 +247,16 @@ Key formatting rules applied to all responses:
 
 ### Example Responses
 
-**fetch_market**
+**fetch_market** (now includes token IDs so agents can immediately use trading tools)
 ```json
 {
   "Question": "Will Trump win the 2028 presidential election?",
   "Slug": "will-trump-win-2028",
   "Yes Price": "$0.6200 (62.00%)",
   "No Price": "$0.3800 (38.00%)",
+  "Yes Token Id": "0x1234...abcd",
+  "No Token Id": "0x5678...ef01",
+  "Token Ids": ["0x1234...abcd", "0x5678...ef01"],
   "Volume": "12345678.0000",
   "Status": "OPEN",
   "End Date": "7 Nov 2028 00:00 UTC"

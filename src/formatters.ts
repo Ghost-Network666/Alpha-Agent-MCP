@@ -115,6 +115,13 @@ function formatArray<T>(arr: T[] | null | undefined, mapFn: (x: T) => any): any 
 export function formatMarket(market: Market): object {
   const yesPrice = market.outcomes?.yes?.price ?? market.prices?.lastTradePrice;
   const noPrice = market.outcomes?.no?.price;
+
+  // Expose token identifiers so agents can go from discovery directly to trading tools
+  // (fetch_order_book, place orders, etc.). Data comes from the official SDK/Gamma.
+  const yesTokenId = market.outcomes?.yes?.tokenId;
+  const noTokenId = market.outcomes?.no?.tokenId;
+  const clobTokenIds = (market as any)?.clobTokenIds ?? (market as any)?.tokenIds;
+
   return omitUndefined({
     'Question': market.question,
     'Slug': market.slug,
@@ -123,6 +130,9 @@ export function formatMarket(market: Market): object {
     'Category': market.category,
     'Yes Price': formatPriceDisplay(yesPrice),
     'No Price': formatPriceDisplay(noPrice),
+    'Yes Token Id': yesTokenId,
+    'No Token Id': noTokenId,
+    'Token Ids': Array.isArray(clobTokenIds) && clobTokenIds.length > 0 ? clobTokenIds : undefined,
     'Volume': formatDecimal(market.metrics?.volume),
     'Liquidity': formatDecimal(market.metrics?.liquidity),
     'Status': market.state?.closed ? 'CLOSED' : (market.state?.active ? 'OPEN' : 'RESOLVED'),
@@ -132,6 +142,17 @@ export function formatMarket(market: Market): object {
 }
 
 export function formatEvent(event: Event): object {
+  // Include lightweight market summaries from the event when the SDK provides them (helps discovery)
+  const markets = Array.isArray(event.markets) && event.markets.length > 0
+    ? event.markets.slice(0, 10).map((m: any) => omitUndefined({
+        'Question': m.question,
+        'Slug': m.slug,
+        'Id': m.id,
+        'Yes Token Id': m.outcomes?.yes?.tokenId,
+        'No Token Id': m.outcomes?.no?.tokenId,
+      }))
+    : undefined;
+
   return omitUndefined({
     'Title': event.title,
     'Slug': event.slug,
@@ -143,6 +164,7 @@ export function formatEvent(event: Event): object {
     'End Date': formatDate(event.schedule?.endDate),
     'Status': event.state?.closed ? 'CLOSED' : (event.state?.active ? 'OPEN' : 'RESOLVED'),
     'Markets Count': event.markets?.length ?? 0,
+    'Markets': markets,
     'Image': event.image,
   });
 }
@@ -164,8 +186,14 @@ export function formatSearchResults(results: SearchResults): object {
       }).filter(Boolean)
     : 'None';
 
+  // Surface any markets returned by search (using the improved formatMarket so tokenIds are included)
+  const markets = Array.isArray((results as any)?.markets) && (results as any).markets.length > 0
+    ? (results as any).markets.map((m: any) => formatMarket(m))
+    : 'None';
+
   return omitUndefined({
     'Events': events,
+    'Markets': markets,
     'Tags': tags,
     'Profiles': profiles,
   });
@@ -652,6 +680,11 @@ export function formatTeam(team: Team): object {
 }
 
 export function formatMarketInfo(info: MarketInfo): object {
+  // Attempt to surface token identifiers if the underlying response (or extended shape) contains them
+  const anyInfo = info as any;
+  const clobTokenIds = anyInfo?.clobTokenIds ?? anyInfo?.tokenIds;
+  const outcomes = anyInfo?.outcomes;
+
   return omitUndefined({
     'Market Id': info.marketId,
     'Condition Id': info.conditionId,
@@ -663,6 +696,9 @@ export function formatMarketInfo(info: MarketInfo): object {
     'Image': info.image,
     'Resolution Source': info.resolutionSource,
     'Tags': info.tags,
+    'Yes Token Id': outcomes?.yes?.tokenId,
+    'No Token Id': outcomes?.no?.tokenId,
+    'Token Ids': Array.isArray(clobTokenIds) && clobTokenIds.length > 0 ? clobTokenIds : undefined,
   });
 }
 
