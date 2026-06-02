@@ -49,6 +49,31 @@ function getStrategyKey(tokenId: string, market?: string) {
   return market ? `${tokenId}:${market}` : tokenId;
 }
 
+// Lightweight in-MCP usage/activity tracking for operators and agents.
+// Tracks tool call counts + last usage time (in-memory, reset on restart).
+// This answers "how do you track the activities? the usage?" for the MCP surface itself.
+// Exposed via the get_mcp_usage tool (always in core for observability).
+// Polymarket-side activities (trades, rebates, rewards, positions) are tracked via list_activity + live user WS resources.
+const mcpUsageTracker = {
+  toolCalls: new Map<string, { count: number; lastCalled: string }>(),
+  startTime: new Date().toISOString(),
+  totalCalls: 0,
+};
+
+function recordToolUsage(toolName: string) {
+  mcpUsageTracker.totalCalls++;
+  const current = mcpUsageTracker.toolCalls.get(toolName) || { count: 0, lastCalled: '' };
+  current.count++;
+  current.lastCalled = new Date().toISOString();
+  mcpUsageTracker.toolCalls.set(toolName, current);
+  // Log to file (never stdout in MCP mode) for persistent activity/usage history
+  logger.info('MCP tool activity', {
+    tool: toolName,
+    countForTool: current.count,
+    totalCalls: mcpUsageTracker.totalCalls,
+  });
+}
+
 /**
  * Calculates the recommended order size based on explicit intent.
  * This enforces the user's defined rules:
@@ -328,6 +353,11 @@ const publicTools = [
       },
       required: ['category']
     }
+  },
+  {
+    name: 'get_mcp_usage',
+    description: '[Meta] Returns internal MCP usage and activity tracking stats: total tool calls since start, per-tool counts + last called timestamps, start time. This is how the MCP tracks its own activities and usage (tool invocations by consuming agents). Complements Polymarket-side activity via list_activity + live polymarket://user/activity resources. Always available in core surface.',
+    inputSchema: { type: 'object', properties: {} }
   },
 
   {
@@ -1745,6 +1775,7 @@ const secureTools = [
 const CORE_TOOL_NAMES = new Set([
   'list_tool_categories',
   'get_tools_by_category',
+  'get_mcp_usage',                    // Meta: how we track activities + usage of the MCP surface
   'wait_seconds',
   'get_strategies',
   'set_strategy',
@@ -1771,7 +1802,7 @@ const PROMPTS = [
   },
   {
     name: 'mcp_tool_structure_and_categories',
-    description: 'MANDATORY "never guess" contract + full quickstart for this MCP. Exact startup sequence, core vs categories, strategy store as your brain, specific native call patterns (including clobTokenIds for list_markets and tokenId for fetch_market via internal listMarkets because SDK fetchMarket only supports id/slug/url), public repo rules (always supply your own keys, use placeholders only), live resources, and how to use without guessing. Load this prompt first.',
+    description: 'MANDATORY "never guess" contract + full quickstart for this MCP. Exact startup sequence, core vs categories, strategy store as your brain, get_mcp_usage for tracking activities/usage of the MCP surface, specific native call patterns (including clobTokenIds for list_markets and tokenId for fetch_market via internal listMarkets because SDK fetchMarket only supports id/slug/url), public repo rules (always supply your own keys, use placeholders only), live resources, and how to use without guessing. Load this prompt first.',
     arguments: []
   },
   {
@@ -1799,6 +1830,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Execute tools — every handler returns JSON. Errors never throw.
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args = {} } = request.params;
+
+  // Track every tool activity/usage (for observability of how agents use the MCP)
+  recordToolUsage(name);
 
   const pub = getPublicClient();
   let sec: any = null;
@@ -1833,6 +1867,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               name: t.name,
               description: t.description
             }))
+          }, null, 2)
+        }]
+      };
+    }
+
+    case 'get_mcp_usage': {
+      // Exposes the internal tracking of activities (tool calls) and usage stats.
+      // This is the answer to "how do you track the activities? the usage?" for the MCP itself.
+      const perTool = Array.from(mcpUsageTracker.toolCalls.entries()).map(([tool, stats]) => ({
+        tool,
+        count: stats.count,
+        lastCalled: stats.lastCalled,
+      })).sort((a, b) => b.count - a.count);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            mcp: 'polymarket-mcp',
+            startTime: mcpUsageTracker.startTime,
+            totalToolCalls: mcpUsageTracker.totalCalls,
+            uniqueToolsUsed: mcpUsageTracker.toolCalls.size,
+            perTool: perTool,
+            note: 'This tracks MCP surface usage (which tools agents call and how often). For Polymarket account activities (trades, rebates, rewards usage etc.) use list_activity or the live polymarket://user/activity resource (powered by user WS). Logs also capture activity to logs/polymarket.log (file only in MCP mode).',
           }, null, 2)
         }]
       };
@@ -3591,12 +3648,13 @@ MANDATORY STARTUP SEQUENCE (do this on every new conversation/session that uses 
 3. Call list_tool_categories.
 4. Call get_tools_by_category for the groups you actually need right now ("Rewards", "Strategy", "Discovery", etc.).
 5. Call get_strategies() (no args) to load your complete current rule set from the store.
+6. Call get_mcp_usage to see how activities (tool calls) and usage are being tracked for this MCP instance.
 
 After that, follow the directives in this prompt, the other prompts, and every tool response's agentDirective field.
 
 The MCP uses categories + a tiny core set to stay lightweight while giving YOU (the agent) full power over every rule and filter.
 
-DEFAULT CORE (always available, no bloat): list_tool_categories, get_tools_by_category, wait_seconds, get_strategies, set_strategy, update_strategy, clear_strategy, get_balance_allowance, list_active_maker_reward_markets, suggest_qualified_size.
+DEFAULT CORE (always available, no bloat): list_tool_categories, get_tools_by_category, get_mcp_usage (tracks MCP activities/tool usage stats — answers "how do you track the activities? the usage?"), wait_seconds, get_strategies, set_strategy, update_strategy, clear_strategy, get_balance_allowance, list_active_maker_reward_markets, suggest_qualified_size.
 
 Load 'Advanced' category only for low-level/signing/prepare tools (e.g. sign_message, send_transaction, prepare_*, api key mgmt). This keeps default surface tiny and safe.
 

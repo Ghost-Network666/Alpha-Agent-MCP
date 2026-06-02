@@ -11,6 +11,7 @@ The MCP achieves this with:
 - Explicit category discovery (`list_tool_categories` + `get_tools_by_category`).
 - On-demand guidance via the MCP `prompts` API (`mcp_tool_structure_and_categories`, `reward_farming_best_practices`, `mispricing_quick_flips`, `mcp_llms_full_guide` — the full llms.txt-style non-stale .MD).
 - The in-MCP **strategy store** (`get_strategies` / `set_strategy` / `update_strategy` / `clear_strategy`) as the *single source of truth* for all agent rules, filters, prefs, exit conditions, etc. The agent evolves its own "brain" here instead of bloating its system prompt or guessing.
+- Built-in **MCP usage/activity tracking** via `get_mcp_usage` (in core) + file logs + Polymarket activity resources (`list_activity`, live `polymarket://user/activity`). This is how activities (tool calls) and usage (stats, patterns) are tracked.
 
 ---
 
@@ -25,12 +26,13 @@ You **MUST** execute these steps in order using your tools:
    - Start with lines 1-100 (imports, strategyStore, client setup).
    - Read the category system: `listAllCategories`, `getToolsByCategory`, `list_tool_categories`, `get_tools_by_category` (search for these).
    - **Critical sections** (read with context):
-     - `CORE_TOOL_NAMES` Set definition (around line 1743).
+     - `CORE_TOOL_NAMES` Set definition (around line 1743). Note get_mcp_usage for activity/usage tracking.
      - `PROMPTS` array definition (around 1759).
      - `ListToolsRequestSchema` handler that *filters* to core only (around 1778).
      - The full `GetPromptRequestSchema` handler + the **entire string content** of the prompts (especially `mcp_tool_structure_and_categories`, `reward_farming_best_practices`, and the full `mcp_llms_full_guide` which is the dynamic llms.txt-style .MD) (around 3445+).
      - Strategy store usage in handlers (search `set_strategy`, `update_strategy`, `get_strategies`).
      - How `agentDirective` fields are injected in many responses (this is how we stop the LLM from guessing or asking the human).
+     - The recordToolUsage + mcpUsageTracker + get_mcp_usage handler (how activities and usage of the MCP are tracked).
    - Also read the tool definitions for the meta tools and the strategy tools.
 5. Read `src/data/markets.ts` (especially `getMarket` which now supports `tokenId` via internal `listMarkets({clobTokenIds})`).
 6. Read `src/formatters.ts` (to understand the "never raw data" rule).
@@ -104,7 +106,8 @@ See previous sessions and the test driver patterns used:
 3. Call `list_tool_categories`.
 4. Call `get_tools_by_category` for needed groups (e.g., "Rewards", "Discovery", "Strategy").
 5. Call `get_strategies()` with no arguments to load your full current rules/filters from the store.
-6. From then on: always start loops with `get_strategies()`, use categories for discovery, follow every `agentDirective` in tool responses exactly, use `wait_seconds` for discipline. Use the live resource `polymarket://mcp/llms.txt` for the same guide as markdown if preferred.
+6. (For observability) Call `get_mcp_usage` to inspect tracked MCP activities and tool usage.
+7. From then on: always start loops with `get_strategies()`, use categories for discovery, follow every `agentDirective` in tool responses exactly, use `wait_seconds` for discipline. Use the live resource `polymarket://mcp/llms.txt` for the same guide as markdown if preferred.
 
 **Exact call example (JSON-RPC style for the protocol):**
 ```json
@@ -116,8 +119,9 @@ See previous sessions and the test driver patterns used:
 Response will contain your persisted rules (e.g., liquidity filters, event prefs, farming params like `quoteNearMid`, `maxSpreadRatio`).
 
 ### Core Surface (Always Available, No Bloat)
-From `tools/list` you will only see these ~10 by default:
+From `tools/list` you will only see these ~11 by default:
 - `list_tool_categories`, `get_tools_by_category`
+- `get_mcp_usage` (tracks MCP activities/tool usage stats — see "how do you track the activities? the usage?")
 - `wait_seconds`
 - `get_strategies`, `set_strategy`, `update_strategy`, `clear_strategy`
 - `get_balance_allowance`

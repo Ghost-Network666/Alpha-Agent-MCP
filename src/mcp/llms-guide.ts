@@ -30,6 +30,7 @@ This MCP is **lightweight and agent-first** for Polymarket (prediction markets o
 2. Call "reward_farming_best_practices" (if rewards/maker) and/or "mispricing_quick_flips".
 3. Call list_tool_categories.
 4. Call get_tools_by_category for needed (Rewards, Discovery, Strategy, Trading, Account, Utilities, Analytics, Advanced).
+5. (Optional but recommended for operators/observability) Call get_mcp_usage to see tracked MCP surface activities and tool usage stats.
 5. Call get_strategies() (no args) to load your persisted rules/filters from the store.
 6. Use categories for more tools when needed. Persist **everything** (sizes, quotes, exits, prefs) via set/update_strategy. Use wait_seconds for discipline. Obey agentDirectives in every response.
 
@@ -37,7 +38,7 @@ This MCP is **lightweight and agent-first** for Polymarket (prediction markets o
 
 ## Core Tools (Always Available - No Bloat)
 From tools/list you get only:
-- list_tool_categories, get_tools_by_category
+- list_tool_categories, get_tools_by_category, get_mcp_usage (MCP-internal activity/usage tracker — this is how activities and usage are tracked)
 - wait_seconds
 - get_strategies, set_strategy, update_strategy, clear_strategy
 - get_balance_allowance, list_active_maker_reward_markets, suggest_qualified_size
@@ -154,6 +155,8 @@ list_resources / read_resource / subscribe / unsubscribe.
 - polymarket://order/{orderId}/fill-status (auto from place responses)
 - polymarket://mcp/llms.txt (this guide as markdown resource)
 Server pushes notifications on change. Read gives formatted cards.
+
+MCP surface activities/usage (tool calls by agents) are tracked internally via get_mcp_usage tool (call counts, last used, total since start). Polymarket-side activities and "usage" (trades, MAKER_REBATE, rewards, etc.) via list_activity + live user/activity resource + earnings tools.
 
 ## Best Practices & Public Rules (Never Guess)
 - Startup seq + get_strategies() first every autonomous loop.
