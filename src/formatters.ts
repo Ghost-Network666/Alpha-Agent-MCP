@@ -719,14 +719,6 @@ export function formatMarketHolder(holder: any): object {
   });
 }
 
-/** Lightweight formatters for other potentially large responses */
-export function formatOpenInterest(item: any): object {
-  return omitUndefined({
-    'Market': item.market,
-    'Value': formatDecimal(item.value),
-  });
-}
-
 export function formatNotificationCompact(notif: any): object {
   return omitUndefined({
     'Id': notif.id,
