@@ -10,6 +10,8 @@ import {
   SubscribeRequestSchema,
   UnsubscribeRequestSchema,
   ListResourceTemplatesRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getPublicClient, getSecureClient, setupGaslessWallet } from './lib.js';
 import * as F from './formatters.js';
@@ -37,6 +39,92 @@ process.env.MCP_SERVER = 'true';
 const strategyStore = new Map<string, any>(); // tokenId -> strategy object
 function getStrategyKey(tokenId: string, market?: string) {
   return market ? `${tokenId}:${market}` : tokenId;
+}
+
+/**
+ * Calculates the recommended order size based on explicit intent.
+ * This enforces the user's defined rules:
+ * - reward_farming / maker: Size to meet rewardsMinSize (no artificial $5 cap)
+ * - market_taker / quick_flip: Hard $5 cap unless highConfidenceEdge === true
+ */
+function calculateRecommendedSize(params: {
+  intent: 'reward_farming' | 'maker' | 'quick_flip' | 'market_taker';
+  rewardsMinSize?: number | string;
+  currentPrice?: number;
+  capitalUsd?: number;
+  highConfidenceEdge?: boolean;
+  maxTakerSizeUsd?: number; // default 5
+}): { size: number; reasoning: string; capped: boolean } {
+  const {
+    intent,
+    rewardsMinSize,
+    currentPrice = 0.5,
+    capitalUsd,
+    highConfidenceEdge = false,
+    maxTakerSizeUsd = 5,
+  } = params;
+
+  const minSize = parseFloat(String(rewardsMinSize || '0'));
+
+  if (['reward_farming', 'maker'].includes(intent)) {
+    // Maker / reward mode: size to qualify, no artificial cap
+    let size = Math.max(1, minSize || 1);
+    if (capitalUsd && currentPrice > 0) {
+      const maxAffordable = capitalUsd / currentPrice;
+      if (size > maxAffordable) {
+        size = Math.floor(maxAffordable);
+      }
+    }
+    return {
+      size: Math.max(0.01, size),
+      reasoning: `Reward/Maker intent: sized to meet minSize=${minSize || 'program default'}. No artificial cap applied.`,
+      capped: false,
+    };
+  }
+
+  // Taker / market / quick flip mode
+  const hardCap = maxTakerSizeUsd;
+  let size = hardCap / Math.max(0.01, currentPrice);
+
+  if (intent === 'quick_flip' && highConfidenceEdge) {
+    // Only allow larger size for genuine high-confidence edges
+    if (capitalUsd && currentPrice > 0) {
+      size = Math.min(size, capitalUsd / currentPrice);
+    }
+    return {
+      size: Math.max(0.01, size),
+      reasoning: 'Quick flip with highConfidenceEdge=true: allowed to size above normal $5 cap.',
+      capped: false,
+    };
+  }
+
+  // Normal market/taker: hard $5 cap
+  return {
+    size: Math.max(0.01, hardCap / Math.max(0.01, currentPrice)),
+    reasoning: `Market/Taker intent: hard capped at $${hardCap}. Use highConfidenceEdge=true only for near-guaranteed edges.`,
+    capped: true,
+  };
+}
+
+/**
+ * Simple precision-weighted Bayesian update.
+ * Matches the logic used in external mispricing scanners.
+ * posterior = (1 - weight) * prior + weight * signal
+ */
+function computeBayesianPosterior(params: {
+  prior: number;      // Polymarket price (0-1)
+  signal: number;     // External signal, e.g. Kalshi price or Claude prob (0-1)
+  weight: number;     // 0 to 1, how much to trust the signal
+}): { posterior: number; divergence: number; reasoning: string } {
+  const { prior, signal, weight = 0.5 } = params;
+  const w = Math.max(0, Math.min(1, weight));
+  const posterior = (1 - w) * prior + w * signal;
+  const divergence = Math.abs(posterior - prior);
+  return {
+    posterior: Number(posterior.toFixed(4)),
+    divergence: Number(divergence.toFixed(4)),
+    reasoning: `Bayesian update with weight=${w}. Divergence from prior: ${(divergence * 100).toFixed(1)}pp`,
+  };
 }
 
 // Map prompt-specified env var names (EOA_PRIVATE_KEY / DEPOSIT_WALLET_ADDRESS)
@@ -67,6 +155,7 @@ const server = new Server(
     capabilities: {
       tools: {},
       resources: RESOURCE_CAPABILITIES,
+      prompts: {},  // For on-demand best practices and structure (agent loads only when needed, reduces bloat)
     },
   }
 );
@@ -236,16 +325,18 @@ const publicTools = [
 
   {
     name: 'list_markets',
-    description: 'List Polymarket markets using the official SDK listMarkets(). Supports all standard filters including category, search terms, active/closed status, resolution dates, etc. Best for targeted discovery (e.g. crypto, specific slugs, short-duration markets).',
+    description: '[Discovery] List Polymarket markets using the official SDK listMarkets(). Supports filters like category (WEATHER, SPORTS etc.), rewardsMinSize for farming, search, volume, liquidity. Use for mispricing scans or reward discovery. Pass category or rewardsMinSize for structure.',
     inputSchema: {
       type: 'object',
       properties: {
         closed: { type: 'boolean' },
         active: { type: 'boolean' },
-        category: { type: 'string' },
-        search: { type: 'string', description: 'Text search within listMarkets (alternative or complement to the dedicated search tool)' },
+        category: { type: 'string', description: 'e.g. WEATHER, SPORTS, CRYPTO' },
+        search: { type: 'string', description: 'Text search' },
+        rewardsMinSize: { type: 'number', description: 'For farming: min size filter from SDK' },
+        volumeNumMin: { type: 'number' },
+        liquidityNumMin: { type: 'number' },
         pageSize: { type: 'number' },
-        // Additional common SDK filters are passed through
         limit: { type: 'number' },
         offset: { type: 'number' }
       }
@@ -265,11 +356,12 @@ const publicTools = [
   },
   {
     name: 'list_events',
-    description: 'List Polymarket events',
+    description: 'List Polymarket events (supports categories like WEATHER, SPORTS, POLITICS, CRYPTO via filters if passed). Use for discovering weather events/markets or sports. Combine with fetch_event for details. Pass category to filter.',
     inputSchema: {
       type: 'object',
       properties: {
-        pageSize: { type: 'number' }
+        pageSize: { type: 'number' },
+        category: { type: 'string', description: 'Filter by category e.g. WEATHER, SPORTS, CRYPTO' }
       }
     }
   },
@@ -1438,6 +1530,52 @@ const secureTools = [
       required: ['seconds']
     }
   },
+  {
+    name: 'suggest_qualified_size',
+    description: '[Utilities] Advisory sizing helper (does NOT enforce anything). Given an intent and token, it looks up the reward program rules and returns a recommended size according to your defined policy:\n- reward_farming / maker: sizes up to meet the actual rewardsMinSize (no artificial $5 cap).\n- market_taker / quick_flip: hard $5 cap unless highConfidenceEdge=true.\n\nCall this when you want help deciding size before placing an order. You remain fully in control.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        intent: { 
+          type: 'string', 
+          enum: ['reward_farming', 'maker', 'quick_flip', 'market_taker'],
+          description: 'What you are trying to achieve with this order'
+        },
+        tokenId: { type: 'string', description: 'The token you plan to trade (used to look up rewardsMinSize and current price)' },
+        side: { type: 'string', enum: ['BUY', 'SELL'] },
+        capitalUsd: { type: 'number', description: 'Optional: your maximum capital for this order' },
+        highConfidenceEdge: { 
+          type: 'boolean', 
+          description: 'Set to true only if this is a high-confidence edge (allows breaking the $5 cap on taker orders)' 
+        }
+      },
+      required: ['intent', 'tokenId', 'side']
+    }
+  },
+  {
+    name: 'compute_bayesian_update',
+    description: '[Utilities] Performs a precision-weighted Bayesian update (posterior = (1-w)*prior + w*signal). Useful for combining Polymarket price (prior) with external signals (Kalshi, Claude, your own research) when hunting mispriced markets for quick flips.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prior: { type: 'number', description: 'Current Polymarket price (0-1)' },
+        signal: { type: 'number', description: 'External probability estimate (0-1)' },
+        weight: { type: 'number', description: 'How much to trust the signal (0-1). Typical: 0.3-0.6' }
+      },
+      required: ['prior', 'signal', 'weight']
+    }
+  },
+  {
+    name: 'get_farmability',
+    description: '[Rewards] Single-call snapshot for a token: reward rules, current spread vs max allowed, liquidity, estimated cost to qualify, and a simple farmability score. Extremely high leverage for both reward farming decisions and quick mispricing flips. Call this before deciding to post maker orders.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string' }
+      },
+      required: ['tokenId']
+    }
+  },
 
   // === Strategy & SL/TP Storage (huge advantage for autonomous agents) ===
   // Agents can store full trading plans (entry, TP, SL, size, notes) server-side in the MCP.
@@ -1562,8 +1700,30 @@ const CORE_TOOL_NAMES = new Set([
   'set_strategy',
   'clear_strategy',
   'get_balance_allowance',
-  'list_active_maker_reward_markets',  // Primary discovery tool - always useful
+  'list_active_maker_reward_markets',
+  'suggest_qualified_size',           // Advisory sizing helper — very frequently useful
 ]);
+
+// === MCP Prompts for Agent Structure (lightweight guidance without tool bloat or enforcement) ===
+// These provide on-demand best practices so the agent has "more structure" with fewer tools to reason over.
+// Loaded only when agent requests via prompts/list or get.
+const PROMPTS = [
+  {
+    name: 'reward_farming_best_practices',
+    description: 'Best practices for autonomous maker reward farming with small capital. Covers sizing rules (maker flexible to program min, taker $5 cap), using categories, suggest_qualified_size, get_farmability, avoiding rate limits, and staying autonomous without asking for options.',
+    arguments: []
+  },
+  {
+    name: 'mispricing_quick_flips',
+    description: 'Guide for using the MCP for quick flips on mispriced markets. Includes using compute_bayesian_update with external signals, get_farmability for liquidity checks, suggest_qualified_size for sizing, list_active for reward-eligible opportunities, and respecting maker vs taker rules.',
+    arguments: []
+  },
+  {
+    name: 'mcp_tool_structure_and_categories',
+    description: 'How to use the MCP efficiently with minimal tool surface. Explains default core tools, using list_tool_categories and get_tools_by_category to load only needed groups (Rewards, Strategy, etc.), avoiding bloat, and keeping the agent in control.',
+    arguments: []
+  }
+];
 
 // Register tool list (MCP discovery) - returns minimal core by default for speed + structure
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -2536,6 +2696,146 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
+    case 'suggest_qualified_size': {
+      const result = calculateRecommendedSize({
+        intent: args.intent,
+        rewardsMinSize: undefined,
+        currentPrice: undefined,
+        capitalUsd: args.capitalUsd,
+        highConfidenceEdge: args.highConfidenceEdge,
+      });
+
+      try {
+        const [book, rewards] = await Promise.all([
+          pub.fetchOrderBook({ tokenId: args.tokenId }).catch(() => null),
+          pub.listMarketRewards({ conditionId: args.tokenId }).catch(() => null),
+        ]);
+
+        const program = rewards?.items?.[0];
+        const actualMinSize = program ? parseFloat(program.rewardsMinSize || '0') : 0;
+        const mid = book?.bids?.[0] && book?.asks?.[0]
+          ? (parseFloat(book.bids[0].price) + parseFloat(book.asks[0].price)) / 2
+          : undefined;
+
+        const betterResult = calculateRecommendedSize({
+          intent: args.intent,
+          rewardsMinSize: actualMinSize,
+          currentPrice: mid,
+          capitalUsd: args.capitalUsd,
+          highConfidenceEdge: args.highConfidenceEdge,
+        });
+
+        const estimatedCost = mid && betterResult.size ? (betterResult.size * mid) : null;
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: true,
+              recommendedSize: betterResult.size,
+              reasoning: betterResult.reasoning,
+              capped: betterResult.capped,
+              tokenId: args.tokenId,
+              lookedUpMinSize: actualMinSize,
+              lookedUpMid: mid,
+              estimatedCostUsd: estimatedCost ? Number(estimatedCost.toFixed(2)) : undefined,
+              meetsRewardMinSize: actualMinSize > 0 ? betterResult.size >= actualMinSize : undefined,
+            }, null, 2)
+          }]
+        };
+      } catch (e) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: true, ...result, note: 'Used provided params (live lookup failed or not needed)' }, null, 2)
+          }]
+        };
+      }
+    }
+
+    case 'compute_bayesian_update': {
+      const result = computeBayesianPosterior({
+        prior: args.prior,
+        signal: args.signal,
+        weight: args.weight,
+      });
+
+      const divergenceBps = result.divergence * 10000;
+      let actionHint = "No clear edge.";
+      if (result.divergence >= 0.08) actionHint = "Strong edge — consider position.";
+      else if (result.divergence >= 0.05) actionHint = "Moderate edge — investigate further.";
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            success: true,
+            posterior: result.posterior,
+            divergenceFromPrior: result.divergence,
+            divergenceBps: Number(divergenceBps.toFixed(0)),
+            actionHint,
+            reasoning: result.reasoning,
+          }, null, 2)
+        }]
+      };
+    }
+
+    case 'get_farmability': {
+      const tokenId = args.tokenId;
+
+      try {
+        const [book, rewards] = await Promise.all([
+          pub.fetchOrderBook({ tokenId }).catch(() => null),
+          pub.listMarketRewards({ conditionId: tokenId }).catch(() => null),
+        ]);
+
+        const program = rewards?.items?.[0];
+        const minSize = program ? parseFloat(program.rewardsMinSize || '0') : 0;
+        const maxSpread = program ? parseFloat(program.rewardsMaxSpread || '0') : 0;
+
+        const bestBid = book?.bids?.[0]?.price ? parseFloat(book.bids[0].price) : null;
+        const bestAsk = book?.asks?.[0]?.price ? parseFloat(book.asks[0].price) : null;
+        const mid = (bestBid && bestAsk) ? (bestBid + bestAsk) / 2 : null;
+        const currentSpread = (bestBid && bestAsk) ? (bestAsk - bestBid) : null;
+
+        const spreadVsAllowed = (currentSpread && maxSpread) ? (currentSpread / maxSpread) : null;
+
+        const costToQualify = (minSize && mid) ? minSize * mid : null;
+
+        let farmabilityScore = 0;
+        if (minSize > 0 && mid) farmabilityScore += 30;
+        if (spreadVsAllowed && spreadVsAllowed < 0.8) farmabilityScore += 40;
+        if (currentSpread && currentSpread < 0.02) farmabilityScore += 20;
+        if (costToQualify && costToQualify < 10) farmabilityScore += 10;
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: true,
+              tokenId,
+              rewardsMinSize: minSize || undefined,
+              rewardsMaxSpread: maxSpread || undefined,
+              currentMid: mid ? Number(mid.toFixed(4)) : undefined,
+              currentSpread: currentSpread ? Number(currentSpread.toFixed(4)) : undefined,
+              spreadVsMaxAllowed: spreadVsAllowed ? Number(spreadVsAllowed.toFixed(2)) : undefined,
+              costToQualifyUsd: costToQualify ? Number(costToQualify.toFixed(2)) : undefined,
+              farmabilityScore: Math.min(100, farmabilityScore),
+              recommendation: farmabilityScore > 70 ? "Strong candidate for maker farming" : 
+                              farmabilityScore > 40 ? "Marginal - check liquidity" : "Poor for small size right now",
+            }, null, 2)
+          }]
+        };
+      } catch (e: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2)
+          }]
+        };
+      }
+    }
+
     case 'set_strategy': {
       const key = getStrategyKey(args.tokenId, args.market);
       const strategy = {
@@ -2990,6 +3290,66 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
 
 server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
   return resourceManager.listResourceTemplates();
+});
+
+// Prompts: lightweight on-demand structure and best practices for the agent.
+// This reduces the need for many tools or heavy descriptions; agent can request "how to do reward farming" etc. when needed.
+server.setRequestHandler(ListPromptsRequestSchema, async () => {
+  return { prompts: PROMPTS };
+});
+
+server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  const name = request.params.name;
+  const prompt = PROMPTS.find(p => p.name === name);
+  if (!prompt) {
+    throw new Error(`Prompt not found: ${name}`);
+  }
+
+  let content = '';
+  if (name === 'reward_farming_best_practices') {
+    content = `Use list_tool_categories first to see groups like Rewards, Strategy, Account.
+Load only what you need with get_tools_by_category("Rewards").
+For sizing: ALWAYS call suggest_qualified_size with correct intent before placing.
+- For reward_farming or maker (postOnly/GTC): size to the program's rewardsMinSize (use get_farmability or list_active to discover).
+- For market_taker or quick_flip: default to $5 max unless highConfidenceEdge.
+Use get_farmability(tokenId) before deciding to farm a market (gives spread vs allowed, cost, score).
+Use compute_bayesian_update for mispricing signals.
+Store plans with set_strategy so you remember SL/TP across steps.
+Use wait_seconds for rate limits and discipline.
+Never ask user for options; use the directives from tools.
+Call get_strategies often to recall your plans.
+For weather/sports: use list_events or search with category filters.`;
+  } else if (name === 'mispricing_quick_flips') {
+    content = `For quick flips on mispriced markets:
+1. Use list_active_maker_reward_markets with maxMinCostUsd for affordable ones, or search for liquid 20-80 cent markets.
+2. Use get_farmability to check current conditions and liquidity.
+3. For signals: use compute_bayesian_update with your prior (Polymarket price) + external signal (e.g. from research or Kalshi).
+4. Sizing: use suggest_qualified_size with intent="quick_flip" (cap $5 unless high edge).
+5. Place with create_and_post_order or place_maker_reward_order (maker preferred for fees/rewards).
+6. Store in strategy with set_strategy for TP/SL.
+Monitor with watch_order_until_filled and resources.
+Use categories to keep tool list small.`;
+  } else if (name === 'mcp_tool_structure_and_categories') {
+    content = `The MCP uses categories to give you structure with minimal tools loaded by default.
+Default core is small: list_tool_categories, get_tools_by_category, wait_seconds, get_strategies, set_strategy, clear_strategy, get_balance_allowance, list_active_maker_reward_markets, suggest_qualified_size.
+Call list_tool_categories to see all (Rewards, Strategy, Account, Trading, Discovery, Analytics, Utilities, Meta).
+Then get_tools_by_category("Rewards") etc. to expand.
+This keeps context small and discovery fast.
+All tools have [Category] in description.
+Use prompts for guidance on workflows.
+Resources for live data (subscribe to polymarket://... ).
+Do not rely on MCP to run your full strategy; use these as building blocks for your autonomous loops.`;
+  }
+
+  return {
+    description: prompt.description,
+    messages: [
+      {
+        role: 'user',
+        content: { type: 'text', text: content }
+      }
+    ]
+  };
 });
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
