@@ -63,96 +63,225 @@ From tools/list you get only:
 
 Full ~130+ capabilities via on-demand categories (prevents bloat, forces deliberate use). Advanced category for sensitive (sign/send/prepare/deploy).
 
-## Official Platform Concepts (from linked .md) — Exact MCP Native Mappings
+## Full Exhaustive Coverage of the Unified @polymarket/client TS SDK — Exact SDK Functions + MCP Native Mappings (per expert guidance)
+
+**You are an expert Polymarket MCP developer using the official unified TypeScript SDK @polymarket/client@beta (follow the categorized list below exactly for any feature mapping).**
+
+**Core SDK Setup (always use this pattern):** 
+import { createPublicClient, createSecureClient } from '@polymarket/client';
+// Prefer createSecureClient for trading/gasless/wallet
+const client = await createSecureClient({ signer, wallet, apiKey?, builder creds?, ... });
+client = client.extend(allActions); // decorators for clean client.listMarkets, client.placeLimitOrder, client.getBBO etc.
+
+**Base instructions (always load first):** the official TS SDK README at https://github.com/Polymarket/ts-sdk/blob/main/README.md. This MCP maps every item below to exact native MCP tool + args (or the direct client.xxx call when documenting SDK usage). Never guess. Explicit only.
+
+MCP internally follows the expert pattern: createSecureClient + .extend(allActions) for full surface. Use client.xxx (decorators). Pagination with for-await or MCP helpers. Gasless preferred. SDK error classes + rate protection.
+
+### 1. Client Creation & Core
+createPublicClient(config?) — Read-only (Gamma/Data + public WS)
+createSecureClient(config) — Full (trading + CLOB + gasless + wallet + auth)
+BasePublicClient, BaseSecureClient, ServiceClient (low-level)
+
+MCP factories + extend (see client.ts). setup_gasless_wallet tool.
+
+### 2. Market Discovery & Gamma
+client.listMarkets(params), client.getMarket(idOrSlug), client.searchMarkets(query), client.listSeries, client.listTags, client.listTeams, client.listSports, client.listEvents, client.getEvent
+
+MCP: list_markets, fetch_market (tokenId via internal listMarkets clob), search, list_events/fetch_event, list_tags/sports/teams/series (Discovery category).
+
+### 3. CLOB Trading (Orders) — secure client, gasless when possible
+client.placeOrder(params) [or placeLimitOrder/placeMarketOrder/postOrder in current beta], cancelOrder, batchCancel, getOpenOrders, getOrder, getOrderBook, getBBO, getMidpoint, getPrices, getPriceHistory
+
+MCP: place_limit_order / place_market_order / create_and_post_order / post_orders, cancel_*, list_open_orders / fetch_order, fetch_order_book / midpoint / price / spread / history, get_farmability (for BBO/depth/signals).
+
+### 4-10. Portfolio, Account, Wallet, Rewards, Builders, WS, Helpers
+See the exact lists in the user's expert instructions (client.getPositions, getProfile, claimRewards, ClobMarketWebSocketManager, buildHmacSignature, wallet adapters, etc.).
+
+MCP maps them to corresponding tools in Account/Trading/Rewards/Advanced (or resources for WS managers). Full details + "use client.xxx directly in non-MCP code" are in the SDK README (primary) + this guide's mappings + mcp_tool_structure_and_categories prompt. Load prompts/get mcp_llms_full_guide first.
+
+**Best practices (MCP and agents must follow):** Prefer createSecureClient + gasless. Decorators pattern (client.listMarkets etc.). Pagination on lists. SDK errors (RateLimitError etc.). Real-time via the bridged WS managers (MCP resources). Map any feature request to the exact function in the 1-10 categories above + the MCP tool that wraps it.
+
+MCP tools: list_markets (with clobTokenIds + category/search passthrough + resolver for tokenId), fetch_market (id/slug/url/tokenId — internal listMarkets clob bridge), search, list_events, fetch_event, list_tags, list_sports, list_teams, list_series, fetch_tag, fetch_series (via Discovery category). Use pagination internally.
+
+### 3. CLOB Trading (Orders) — Always use secure client + gasless when possible
+- client.placeOrder(params) — Limit / Market, GTC / IOC / FOK / GTD (signed)
+- client.cancelOrder(orderId)
+- client.batchCancel(orderIds)
+- client.getOpenOrders()
+- client.getOrder(orderId)
+- client.getOrderBook(tokenId, params)
+- client.getBBO(tokenId) — Best Bid/Offer
+- client.getMidpoint(tokenId)
+- client.getPrices(tokenId)
+- client.getPriceHistory(tokenId)
+
+MCP: place_limit_order, place_market_order, create_and_post_order (unified maker), post_orders (batch), cancel_order(s), cancel_all_orders, list_open_orders, fetch_order, fetch_order_book, fetch_midpoint, fetch_price, fetch_spread, fetch_price_history, watch_order_until_filled, get_farmability (for BBO/mid + depth + signals). Prefer postOnly GTC for rewards. Use prepare_* + send for Advanced.
+
+### 4. Portfolio & Positions
+- client.getPositions(params) — by market, outcome
+- client.getPortfolio(summary?)
+- client.getActivity(params) — trades, transfers, etc.
+- client.getTrades(params)
+- client.getTransfers(params)
+
+MCP: list_positions (with filters), list_closed_positions, fetch_portfolio_value, list_activity (rich with rebates), list_account_trades. Cards include full PnL.
+
+### 5. Account Management
+- client.createOrDeriveApiKey()
+- client.fetchApiKeys()
+- client.deleteApiKey(keyId)
+- client.getProfile()
+- client.updateProfile()
+- client.getLeaderboards(params)
+- client.getComments(params)
+- client.postComment(params)
+
+MCP: create_api_key / derive / create_or_derive / fetch_api_keys / delete_api_key (Advanced), get_profile, update_profile, post_comment (Account category), list_builder_leaderboard, list_trader_leaderboard, fetch_public_profile, list_comments, fetch_comment, list_comments_by_user_address.
+
+### 6. Wallet & Onchain / Gasless (secure + Advanced)
+- client.approveToken(token, amount)
+- client.deployDepositWallet()
+- client.getDepositWallet()
+- client.isGaslessReady()
+- client.waitForGaslessTransaction(txHash)
+- Gasless approval + transaction workflows
+
+MCP: approve_erc20, approve_erc1155_for_all, deploy_deposit_wallet, fetch_deposit_wallet, setup_gasless_wallet, is_gasless_ready (implicit), setup_trading_approvals, split/merge/redeem_positions, prepare_* family, send_transaction (very sensitive), update_balance_allowance, fetch_balance_allowance (standalone for reliability).
+
+### 7. Rewards & Subscriptions
+- client.getRewards()
+- client.claimRewards()
+- client.listSubscriptions()
+- client.subscribeTo(topic)
+- client.unsubscribe()
+
+MCP: list_active_maker_reward_markets (primary enriched), list_current_rewards, get_farmability (rewards + book + score), place_maker_reward_order / place_optimized_reward_order, validate_for_maker_rewards, suggest_reward_order_parameters, list_user_earnings*, fetch_reward_percentages. Subscriptions via resources (polymarket://user/* bridged).
+
+### 8. Builders & Relayer
+- Builder program actions
+- Remote signing support
+
+MCP: create_builder_api_key, fetch_builder_api_keys, revoke_builder_api_key, list_builder_leaderboard/trades/volume, fetch_builder_fee_rates. Relayer preferred for gasless (passed in createSecureClient).
+
+### 9. WebSockets (Real-time) — MCP bridges, never direct in agent code
+- ClobMarketWebSocketManager — Orderbook updates
+- ClobUserWebSocketManager — user orders, fills, positions
+- RtdsWebSocketManager — real-time data service
+- SportsWebSocketManager
+- Methods: connect(), close(), event listeners (orderbook, trades, etc.)
+
+MCP: Resources (subscribe/read) for polymarket://market/{tokenId}/book, polymarket://user/orders, /fills, /positions, /portfolio, /activity, polymarket://order/{id}/fill-status (auto on place). Uses ReconnectingSubscription + client.subscribe internally. Prefer resources over polling.
+
+### 10. Helpers & Utils
+- Wallet adapters: viem (privateKey — MCP default), ethers-v5, privy
+- resolveAccountIdentity
+- Pagination (async iterators on all list methods — MCP uses callPaginatedWithFormat + collectAll)
+- HMAC signing (buildHmacSignature), input validation, error handling (RateLimitError, SigningError, etc. — MCP rate protection + structured errors + agentDirective)
+- All Types from @polymarket/types and bindings (Market with clobTokenIds/outcomes/tokens, OrderSide, OrderType, ActivityType incl. rebates, etc. — normalized in MCP cards)
+
+**MCP Best Practices (follow exactly):**
+- Always prefer createSecureClient + gasless (setup_gasless_wallet) for trading/wallet.
+- Use decorators pattern for clean calls (client.listMarkets, client.placeLimitOrder / postOrder etc.).
+- All list* : use pagination (for await or MCP wrappers).
+- Error handling: SDK classes + MCP structured {ok:false, retryAfter, agentDirective}.
+- Real-time: always use MCP resources (bridged WS managers).
+- For any feature: map to exact SDK function above + corresponding MCP tool (or direct client. call in non-MCP code).
+
+See full current mappings + examples in the rest of this guide + mcp_tool_structure_and_categories prompt. Load them first.
+
+### Environments
+production (default). Others via config for test.
+
+### Errors (full set; MCP rate protection + agentDirective turns many into structured recoverable)
+CancelledSigningError, RateLimitError, RequestRejectedError, SigningError, TimeoutError, TransactionFailedError, TransportError, UnexpectedResponseError, UserInputError, CreateSecureClientError, SetupGaslessWalletError, ListMarketsError, FetchMarketError, PlaceLimitOrderError, PostOrderError, ... (many per-action guards with isError()).
+
+### All Actions (from /actions/ + decorators on extended client) — MCP Mappings
+**Markets / Discovery (use MCP Discovery category first)**
+- listMarkets(params) — clobTokenIds, rewardsMinSize, volume/liquidity filters, closed/active, pageSize/cursor. MCP: list_markets (with category/search passthrough + clobTokenIds resolver). Always get Yes/No TokenId + Token Ids in cards.
+- fetchMarket({id|slug|url} only) — NO tokenId. MCP: fetch_market({id/slug/url/tokenId}) — resolves tokenId via internal listMarkets({clobTokenIds:[...]}) + first (the reliable bridge).
+- searchMarkets / search({q}) — MCP: search tool.
+- listEvents, getEvent, listSeries, listTags, listTeams, listSports, fetchTag, fetchSeries, listMarketHolders, fetchEventLiveVolume, fetchEventTags, fetchMarketTags, fetchRelatedTags, fetchRelatedTagResources — MCP: list_events (category filter), search, or get_tools_by_category("Discovery") for list_tags / list_sports etc if added as thin wrappers; otherwise use list_markets + search for most.
+- getMarketInfo etc.
+
+**CLOB / Trading (CLOB native, explicit only)**
+- placeOrder / placeLimitOrder / placeMarketOrder (signed, GTC/IOC/FOK/FAK, postOnly), createLimitOrder, postOrder, postOrders (batch). MCP: place_limit_order, place_market_order, create_and_post_order, place_maker_reward_order / place_optimized_reward_order (enforce GTC+postOnly+scoring for rewards), post_orders (batch <=15). **Never use intent.**
+- cancelOrder, cancelOrders, cancelAll, cancelMarketOrders. MCP: cancel_order / cancel_orders / cancel_all_orders / cancel_orders_for_market.
+- getOrderBook(tokenId), getBBO, getMidpoint, getPrices, getPriceHistory, getOpenOrders, getOrder, estimateMarketPrice, fetchOrderScoring, fetchOrdersScoring. MCP: fetch_order_book, fetch_midpoint, fetch_price, fetch_spread, get_farmability (book + rewards + competitionSignal + mids + score), watch_order_until_filled, get_order_scoring_status.
+- listOpenOrders, listAccountTrades. MCP via list_activity or dedicated.
+
+**Portfolio & Positions**
+- getPositions, listPositions (open/closed), getPortfolio, getActivity (trades/rebates/transfers), getTrades, getTransfers. MCP: list_positions, list_closed_positions, fetch_portfolio_value, list_activity (rich cards with rebates/PnL), get_farmability.
+
+**Account Management**
+- createOrDeriveApiKey, fetchApiKeys, deleteApiKey, getProfile, updateProfile, getLeaderboards (builder/trader), listComments, postComment, fetchPublicProfile, listBuilderLeaderboard, listBuilderTrades, listBuilderVolume. MCP: some via Advanced or Account category (list_builder_leaderboard exposed); get_profile etc via get_tools_by_category("Account") if thin-wrapped or use list_activity + resources for most agent needs.
+
+**Wallet / Onchain (Advanced or direct)**
+- approveToken, deployDepositWallet, getDepositWallet, isGaslessReady, waitForGaslessTransaction, setupTradingApprovals, split/merge/redeem (via prepare or onchain CTF tools). MCP: get_balance_allowance, approve_erc20, approve_erc1155_for_all, setup_trading_approvals, setup_gasless_wallet, split_position, merge_positions, redeem_positions, prepare_* (Advanced), send_transaction (very sensitive).
+
+**Rewards & Subscriptions**
+- getRewards / listCurrentRewards / listMarketRewards / claimRewards, listSubscriptions, subscribe/unsubscribe. MCP: list_active_maker_reward_markets (enriched primary), list_current_rewards (raw), get_farmability, reward place tools; subscriptions bridged to resources.
+
+**Builders / Relayer / Data / Transfers**
+- builder fee/volume/leaderboard actions, remote signing. MCP: list_builder_* tools + builder attribution in config examples (the one labeled "recommended Relayer setup").
+- Full historical via list_activity / resources.
+- initiateTransfer etc via onchain tools.
+
+**Sports / other**
+- listSports, fetchSportsMarketTypes — MCP Discovery or list_events + search; add thin MCP wrappers in future categories for completeness.
+
+### Decorators (High-level; attached after .extend(allActions))
+Public: discovery (listMarkets etc), data/analytics (positions, volume, holders), account (public), rewards (public), subscriptions.
+Secure: all above + trading (place/cancel), wallet (gasless, deposit, approvals), account (full keys/profile), rewards (claim).
+MCP: calls the decorated methods under the hood (e.g. sec.placeLimitOrder), returns formatted cards + agentDirective. For raw access use Advanced category tools.
+
+Usage in SDK (ref only): const client = createSecureClient({...}).extend(allActions); await client.listMarkets(...); await client.placeLimitOrder(...);
+
+### WebSockets (Real-time; MCP bridges, never direct subscribe in agent loops)
+SDK provides subscribe() on client (market/user/sports/rtds specs) returning async iterable + handle.
+Managers (internal in current beta): ClobMarketWebSocketManager (books), ClobUserWebSocketManager (orders/fills/positions), RtdsWebSocketManager, SportsWebSocketManager. Public + auth variants.
+MCP: auto ReconnectingSubscription + resource manager. Subscribe/read via MCP resources protocol:
+- polymarket://market/{tokenId}/book (live bids/asks + updates)
+- polymarket://user/orders , /fills , /positions , /portfolio , /activity
+- polymarket://order/{orderId}/fill-status (auto-started on every place_*)
+Call list_resources, read_resource, subscribe on the MCP server. Server pushes notifications. Prefer over polling.
+
+### Wallet Integration
+- viem: privateKey(pk) from @polymarket/client/viem (MCP default for signer).
+- ethers-v5, privy adapters via subpaths.
+- resolveAccountIdentity, deposit wallet derivation (getDepositWallet), Safe/proxy via builder.
+MCP: supply EOA_PRIVATE_KEY + DEPOSIT_WALLET_ADDRESS at startup; gasless via setup_gasless_wallet tool.
+
+### Types (re-exported from bindings + local)
+Market (with outcomes, clobTokenIds, tokens, rewards), Event, Order, OrderBook, Position, Paginated, OrderSide/Buy/Sell, OrderType (GTC etc), TimeInForce, SignatureType, ActivityType (incl rebates), all Request/Response for every action, WS message types, errors with isError guards.
+MCP cards (formatMarket etc) normalize these + add Yes/No TokenId, health, sentiment (bias/skew), farmabilityScore, PnL status, agentDirective.
+
+### Low-Level
+Direct ServiceClient for uncovered endpoints.
+ABIs (USDC, ConditionalTokens, collateral adapters).
+RPC utils, auth flows (HMAC via buildHmacSignature + relayerApiKey/remoteBuilderSigning helpers).
+MCP Advanced category for prepare/sign/send/raw tx where needed. Most agents never need (use place_*/approve_* tools).
+
+**MCP value-adds for the full surface**: rich cards never raw SDK, tokenId resolver everywhere, strategyStore as your brain (persist all filters/exits/requote policy), get_mcp_usage for tracking your calls, live resources for WS, rate protection + directives, no bloat (load categories + prompts first), explicit only.
+
+See also the SDK README for examples/patterns. MCP keeps its mcp_llms_full_guide + this in sync at call-time.
+
+## Official Platform Concepts (condensed legacy mappings — prefer the exhaustive section above) — Exact MCP Native Mappings
 
 ### Markets & Events (Fetching, Discovery)
-Official: https://docs.polymarket.com/concepts/markets-events.md , market-data/ , api-ref/markets/* , events/*
-- list_markets({ closed?, active?, clobTokenIds?: string[], rewardsMinSize?, volumeNumMin?, liquidityNumMin?, tagSlug?, search?, pageSize? }) — supports direct clobTokenIds array filter (native). **Primary for full discovery of "many more events"** (use large pageSize, category, search/keyword filters). Note: the \`polymarket://markets\` *resource* is only a small first-page snapshot (pageSize 20, default order) and can skew to meme/trending (e.g. GTA-tied); use the *tool* + \`search({q})\` + category filters (WEATHER, POLITICS, etc.) + list_events for the real range.
-- fetch_market({ id? | slug? | url? | tokenId: "0x..." }) — **tokenId support added in MCP**: internally does listMarkets({ clobTokenIds: [tokenId], pageSize:1 }) + first because official SDK fetchMarket() only accepts {id, slug, url} (no tokenId param). Confirmed via ts-sdk source + recent PRs (e.g. #78 tag/series normalization did not add tokenId to fetchMarket; list clob filter is the way).
-- list_events({ category?, ... }), fetch_event({id|slug}).
-- search({q}).
-- list_tags, fetch_tag, list_series, fetch_series, get_event_tags, etc.
-- For token from rewards/activity: always resolve via fetch_market({tokenId}) or list_markets({clobTokenIds}).
+- list_markets(...) — see exhaustive above. MCP primary.
+- fetch_market({tokenId support via resolver}) — see above.
+- list_events, search, list_tags etc — MCP Discovery tools + search; use list_events({category}) for sports/weather.
 
-Use after: getMarket in resources also supports tokenId now for polymarket://market/{tokenId}.
+(For positions/trading/rewards etc details see the exhaustive SDK coverage section above + MCP tool descriptions in categories. The mappings below are legacy/condensed; the structure at top of this guide is authoritative.)
 
-### Positions & Tokens (CTF mechanics)
-Official: https://docs.polymarket.com/concepts/positions-tokens.md , trading/ctf/* , api-ref/core/*
-- list_positions(), list_closed_positions() — returns formatPosition cards with 'Cash PnL', 'Realized PnL', 'Current Value', avg/cur prices, redeemable/mergeable.
-- list_market_positions({conditionId}), get_positions_for_market.
-- Onchain: split_position({conditionId, amount}), merge_positions, redeem_positions (after approvals via setup_trading_approvals or prepare_*).
-- formatPosition / formatClosedPosition / formatMarketPosition already surface PnL fields + health (redeemable etc). Enhanced cards now include more sentiment/liquidity health signals.
+### Activity, Portfolio, Notifications (condensed)
+- list_activity, list_positions, fetch_portfolio_value, fetch_notifications — use MCP list_activity / list_positions / fetch_portfolio_value + user/* resources.
 
-**PNL in cards**: Positions return realized + cash PnL. For unrealized est use currentValue vs entry cost (size*avgPrice). List activity for trade history contributing to PnL.
+### Onchain / Gasless / Approvals / Relayer (condensed)
+- See exhaustive "Wallet / Onchain" and "Advanced" category tools. Use setup_gasless_wallet, setup_trading_approvals, approve_*, split/merge/redeem, prepare_* .
 
-### Prices, Orderbook, Spreads, Market Data (for Sentiment/Health)
-Official: https://docs.polymarket.com/concepts/prices-orderbook.md , market-data/* (get-midpoint, get-order-book, get-spread, get-last-trade-prices, get-fee-rate, tick-size, history, ws channels)
-- fetch_order_book({tokenId}), fetch_price({tokenId, side}), fetch_midpoint({tokenId}), fetch_spread({tokenId}), fetch_spreads({tokenIds}), fetch_last_trade_price etc.
-- fetch_price_history({tokenId, ...}).
-- Resources for live: polymarket://market/{tokenId}/book (real WS bridged, subscribe/read).
-- Market Channel / User Channel WS via MCP resources (no polling).
-
-**Sentiment / Health from cards**: formatMarket + get_farmability + formatOrderBook now emphasize:
-- Tight spread + good depth = "healthy liquid" (low slippage, good for size).
-- Book imbalance (from get_farmability depth calc) + volume = short-term flow sentiment.
-- Yes/No price skew (in formatMarket bias) + recent vol as proxy for crowd sentiment.
-- Use for entry: only farm/trade when spreadVsMaxAllowed low + competitionSignal favorable.
-- Live books via resource give real-time imbalance for adverse selection avoidance.
-
-### Order Lifecycle & Trading (CLOB native - EXPLICIT ONLY)
-Official: https://docs.polymarket.com/concepts/order-lifecycle.md , trading/orders/* (create, cancel, overview), trading/quickstart.md , trading/fees.md , trading/orderbook.md
-- **Always explicit tool calls. No intent, no "trade for me", no high-level wrappers for core CLOB trading.**
-  - place_limit_order({ tokenId, price, size, side: 'BUY'|'SELL', orderType?: 'GTC'|'GTD'|'FOK'|'FAK', postOnly?: boolean, ... })
-  - place_market_order({ tokenId, amount, side, ... })
-  - create_and_post_order (for advanced).
-  - For **maker rewards only**: place_maker_reward_order({tokenId, price, size?}) or place_optimized_reward_order — these force GTC+postOnly + scoring checks. Native sticky edge.
-- Cancel: cancel_order({orderId}), cancel_orders({orderIds}), cancel_orders_for_market({market}), cancel_all_orders().
-- list_open_orders(), fetch_order({id}), list_account_trades(), watch_order_until_filled({orderId}).
-- get_order_scoring_status({orderId}) — check if scoring rewards (GTC postOnly needed).
-- Resources: polymarket://user/orders , /order/{id}/fill-status , /user/fills (subscribe for push).
-
-**Trading rules (never guess)**: 
-- For pure trading (directional/mispricing): YOU (via your strategy rules or calc) decide size/price/side then call place_limit_order directly with numbers. suggest_qualified_size is advisory (used mainly with intent="reward_farming" or "maker" or "quick_flip" for policy).
-- Use postOnly + GTC for maker (cheaper fees + rewards eligibility).
-- Always check get_farmability or book first for liquidity/slippage (sentiment proxy).
-- Rate discipline: wait_seconds({seconds:4-8, reason:"after order to respect CLOB limits"}) .
-- Gasless: use Relayer strategy in env + prepare_* (Advanced) or the higher place_ that support it.
-- Attribution: builder/relayer keys for volume credit (your keys).
-
-See also: trading/clients/* (L2 for orders, public for data).
-
-### Rewards, Earnings, Maker Rebates, Liquidity Programs
-Official: https://docs.polymarket.com/market-makers/* (overview, liquidity-rewards, maker-rebates.md , getting-started), api-ref/rewards/* , trading/taker-rebates.md , get-current-rebated-fees etc.
-- Primary discovery (lightweight, agent-optimized, not raw): list_active_maker_reward_markets({maxMinCostUsd?, maxMinSize?, maxResults?}) — tiny ranked (max 8), with yes/noTokenId, real USD qualify cost (minSize*mid), mids, dailyRate, volume/liquidity, attractiveness. Filter by your strategy caps. Per X: low minSize + decent rate + not near resolve.
-- get_farmability({tokenId}) — SDK-native (book + rewards + spreads): returns currentMid, spread, spreadVsMaxAllowed, costToQualifyUsd, suggestedNearMidBuy/Sell (quote near mid for weighting), competitionSignal (thin/moderate/deep + imbalance), farmabilityScore (0-100), recommendation. Use as pre-check + sentiment (low comp = opportunity).
-- place_maker_reward_order / place_optimized... (the only ones that guarantee postOnly for scoring).
-- validate_for_maker_rewards, suggest_reward_order_parameters (advisory).
-- Earnings: list_user_earnings_for_day, fetch_reward_percentages, fetch_total_earnings..., formatRewardEarnings etc (compact versions preferred).
-- Rebates surface automatically in list_activity (types MAKER_REBATE, REWARD etc) via formatActivity — Amount + details.
-- list_current_rewards / list_market_rewards are RAW (large) — docs steer agents to list_active... + get_farmability instead for autonomy.
-- Other: get_current_rebated_fees_for_maker.
-
-**Farming loop (native, no guess)**: get_strategies() → list_active... (your filters from strategy) → get_farmability(token) → suggest_qualified_size({intent:"reward_farming", ...}) → update_strategy (log, including your requote throttling) → place_maker... (batch with post_orders when doing multiple) → resources watch or list_open + reprice *only per your conservative drift/interval rules* (CLOB V2 place-path contention: 200+/sec requotes on one account reliably causes 400ms+ place latency even with no 429s; cancels are lighter; use WS + get_farmability signals, wait_seconds, max ~5-20/sec per side via strategy policy) → exit or rotate per your stored rules. Follow directives.
-
-**CLOB V2 requoting note**: Heavy requoting for "sticky" rewards can trigger server-side queuing on the place path (per-wallet, cross-IP for same account). Design your strategy rules (max rate, drift threshold, batching) to avoid it while still earning. See reward_farming_best_practices prompt for details.
-
-### Activity, Portfolio, Notifications
-- list_activity({limit?}) — full lifecycle + now rebates (MAKER_REBATE etc). formatActivity gives Type, Amount, Side, Price, Title.
-- list_positions + fetch_portfolio_value.
-- fetch_notifications, drop_notifications.
-
-### Onchain / Gasless / Approvals / Relayer
-Official: trading/gasless.md , trading/bridge/* , relayer/* , deposit-wallets.md
-- CTF: split/merge/redeem (require prior approvals).
-- Approvals: setup_trading_approvals() (one-call for ERC20 + CTF), or specific approve_erc20 / approve_erc1155_for_all.
-- enable_auto_redeem note: it's a contract approval (setup includes).
-- Gasless flows: prepare_* (Advanced) then execute, or Relayer auth path.
-- Relayer: submit via keys, get nonce etc (Advanced or via higher tools).
-- Builder: list_builder_trades, list_builder_leaderboard for attribution credit.
-
-### Analytics, Profiles, Misc
-- list_builder_leaderboard, fetch_public_profile, trader leaderboards (some have PnL), get_open_interest, get_live_volume_for_event, comments, holders, top holders.
-- format* cards for all (never raw).
+### Analytics, Profiles, Misc (condensed)
+- list_builder_leaderboard etc available via Discovery/Account category tools or search. format* cards always.
 
 ## Prompts (Call via prompts/get — Your On-Demand .MD Guidance)
 - mcp_llms_full_guide (this — the full concepts-to-tools mapping, refreshed from code)
@@ -201,12 +330,12 @@ Use list_tool_categories + get_tools_by_category("Rewards" | "Trading" | ...). S
 
 See also AGENTS.md in repo root for code maintainers (research reqs, no hardcodes, no test files in tree, source split recs for bloat prevention, etc.).
 
-This guide is generated at call time from the live PROMPTS + tool defs + categories in src/mcp.ts (and formatters for cards). It links the SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md) as the base instructions + adds MCP mappings. Call the prompt again after updates to refresh. See the SDK README + https://github.com/Polymarket/ts-sdk (and its PRs) for underlying native behaviors.
+This guide is generated at call time from the live PROMPTS + tool defs + categories in src/mcp.ts (and formatters for cards). It links the SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md) as the base instructions + adds MCP mappings (full exhaustive surface covered above). Call the prompt again after updates to refresh. See the SDK README + https://github.com/Polymarket/ts-sdk (and its PRs) for underlying native behaviors.
 
 For code changes: follow AGENTS.md mandatory reads + research + pre-commit /review subagent + build + stdio load test (use /tmp only for temps). Never commit hardcodes or test files.
 
 `;
 
-  md += "\n\n## Current Categories (runtime authoritative via list_tool_categories)\nRewards | Strategy | Account | Utilities | Discovery | Trading | Analytics | Meta (get_mcp_usage for MCP activities/usage tracking) | Advanced\n\n## Notes\n- Tools/prompts evolve; always refresh via prompts/get and categories for latest.\n- Base SDK reference (all concepts, APIs, examples — use this as primary agent instructions): https://github.com/Polymarket/ts-sdk/blob/main/README.md (kept up-to-date by the maintainers; MCP uses the SDK exclusively).\n- This MCP mapping ensures native use without ever guessing which tool or arg shape (SDK README first + these MCP overlays).";
+  md += "\n\n## Current Categories (runtime authoritative via list_tool_categories)\nRewards | Strategy | Account | Utilities | Discovery | Trading | Analytics | Meta (get_mcp_usage for MCP activities/usage tracking) | Advanced\n\n## Notes\n- Tools/prompts evolve; always refresh via prompts/get and categories for latest.\n- Base SDK reference (all concepts, APIs, examples — use this as primary agent instructions): https://github.com/Polymarket/ts-sdk/blob/main/README.md (kept up-to-date by the maintainers; MCP uses the SDK exclusively).\n- This MCP mapping (full exhaustive SDK surface) ensures native use without ever guessing which tool or arg shape (SDK README first + these MCP overlays).";
   return md;
 }

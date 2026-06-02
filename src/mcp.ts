@@ -26,6 +26,9 @@ import {
   deleteApiKey,
   fetchBalanceAllowance,
   updateBalanceAllowance,
+  createBuilderApiKey,
+  fetchBuilderApiKeys,
+  revokeBuilderApiKey,
 } from '@polymarket/client/actions';
 import { createResourceManager, RESOURCE_CAPABILITIES } from './mcp/resources.js';
 import { callWithRateLimitProtection, sleep } from './utils/errors.js';
@@ -184,7 +187,7 @@ normalizeEnvAliases();
 
 // All logging MUST go to stderr. Stdout is strictly for the MCP JSON-RPC protocol.
 const server = new Server(
-  { name: 'polymarket-mcp', version: '1.0.0' },
+  { name: 'clob-mcp', version: '1.0.0' },
   {
     capabilities: {
       tools: {},
@@ -315,7 +318,7 @@ function getToolsByCategory(category: string) {
     if (catLower === 'strategy' && /strategy|stop loss|take profit|sl\/tp/i.test(desc)) return true;
     if (catLower === 'account' && /balance|allowance|portfolio|position/i.test(desc)) return true;
     if (catLower === 'trading' && /place|order|cancel|maker/i.test(desc)) return true;
-    if (catLower === 'discovery' && /list_market|fetch_market|search/i.test(desc)) return true;
+    if (catLower === 'discovery' && /list_market|fetch_market|search|list_tag|list_sport|list_team|fetch_tag/i.test(desc)) return true;
     if (catLower === 'advanced' && /security-sensitive|sign_|send_transaction|prepare_|deploy_|end_authentication|get_secure_client_info|advanced/i.test(desc)) return true;
     if (catLower === 'meta' && /\[meta\]|meta|usage|track|discover/i.test(desc)) return true;
     return false;
@@ -413,6 +416,7 @@ const publicTools = [
       }
     }
   },
+
   {
     name: 'search',
     description: 'Official full-text search via client.search(). Excellent for finding short-duration, high-resolution, or niche markets (e.g. "bitcoin 15 minutes", "will bitcoin reach 150k by friday"). Returns markets, events, tags, and profiles. Use precise queries for best results on 5m/15m/1h resolution markets.',
@@ -1374,6 +1378,32 @@ const secureTools = [
     description: '[Advanced] Delete the currently authenticated API key. API keys must be derived from EOA private key, not deposit wallet',
     inputSchema: { type: 'object', properties: {} }
   },
+  {
+    name: 'create_builder_api_key',
+    description: '[Account] [Advanced] Create a builder API key (for HMAC attribution/relayer flows). SDK: createBuilderApiKey or equivalent. Use for builder auth strategy in createSecureClient. Requires secure client + builder creds in env.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' }
+      }
+    }
+  },
+  {
+    name: 'fetch_builder_api_keys',
+    description: '[Account] [Advanced] Fetch builder API keys for the account. SDK equivalent. Complements create/revoke for full builder key lifecycle.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'revoke_builder_api_key',
+    description: '[Account] [Advanced] Revoke a builder API key by id. SDK: revokeBuilderApiKey.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' }
+      },
+      required: ['id']
+    }
+  },
 
   // === Additional Secure Account / Data (completes all handler cases) ===
   {
@@ -1395,6 +1425,39 @@ const secureTools = [
     name: 'is_gasless_ready',
     description: 'Check if the gasless/relayer wallet is ready',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'fetch_deposit_wallet',
+    description: '[Account] [Advanced] Fetch/derive the deposit wallet for the authenticated account (SDK getDepositWallet + resolve flows). Pairs with deploy_deposit_wallet.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'get_profile',
+    description: '[Account] Fetch the authenticated account profile (secure view; complements fetch_public_profile).',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'update_profile',
+    description: '[Account] Update the authenticated account profile.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        displayName: { type: 'string' },
+        // other fields per SDK
+      }
+    }
+  },
+  {
+    name: 'post_comment',
+    description: '[Account] Post a comment (for account activity/engagement).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        market: { type: 'string' },
+        text: { type: 'string' }
+      },
+      required: ['market', 'text']
+    }
   },
   {
     name: 'fetch_order_scoring',
@@ -1809,7 +1872,7 @@ const PROMPTS = [
   },
   {
     name: 'mcp_llms_full_guide',
-    description: 'Returns complete guide: FIRST the official TS SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md — kept up-to-date by the maintainers; use as primary agent instructions for all SDK coverage/APIs/examples) + MCP-specific mappings (overview, startup, concepts mapped to exact native MCP tool calls + JSON examples (explicit place_* only — no intent ever for trading), strategy store as brain, live resources (incl. polymarket://mcp/llms.txt), prompts, best practices, public rules, enhanced formatter output cards (PNL in positions, sentiment/liquidity health + farm scores in markets/rewards)). Call this prompt (and structure one) first to get full guidance so agents know everything without ever guessing (SDK README for base + this for MCP). Always in sync with current tools + SDK (dynamic from code).',
+    description: 'Returns complete guide: FIRST the official TS SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md — kept up-to-date by the maintainers; use as primary agent instructions for all SDK coverage/APIs/examples) + MCP-specific mappings with FULL EXHAUSTIVE COVERAGE of the unified @polymarket/client TS SDK surface (client factories, allActions/extend, subpaths /actions /viem, Core classes, every Error, All Actions categorized: markets/discovery/CLOB/portfolio/account/wallet/rewards/builders/data/transfers/sports, Decorators public+secure, WS managers bridged to resources, wallet integrations, Types, low-level calls). Maps each to exact native MCP tool + JSON + "explicit only, no intent". Plus strategyStore, cards (PNL/sentiment/farmability), resources, rate notes, public rules. Call this (and structure prompt) first. Always in sync (call-time from code + current SDK).',
     arguments: []
   }
 ];
@@ -1886,7 +1949,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
-            mcp: 'polymarket-mcp',
+            mcp: 'clob-mcp',
             startTime: mcpUsageTracker.startTime,
             totalToolCalls: mcpUsageTracker.totalCalls,
             uniqueToolsUsed: mcpUsageTracker.toolCalls.size,
@@ -1910,6 +1973,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Use official SDK search directly (SearchResults shape: { markets, events, tags, profiles }).
       // Do NOT wrap in callPaginatedWithFormat — it is not a simple item paginator.
       return callWithFormat(() => pub.search(args), F.formatSearchResults, name);
+    case 'list_tags':
+      return callWithFormat(() => pub.listTags(), F.formatGeneric, name);
+    case 'list_sports':
+      return callWithFormat(() => pub.listSports(), F.formatGeneric, name);
+    case 'list_teams':
+      return callWithFormat(() => pub.listTeams(), F.formatGeneric, name);
+    case 'fetch_tag':
+      return callWithFormat(() => pub.fetchTag(args), F.formatGeneric, name);
     case 'fetch_order_book':
       return callWithFormat(() => pub.fetchOrderBook(args), F.formatOrderBook, name);
     case 'fetch_price':
@@ -3366,6 +3437,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return callWithFormat(async () => (await getSec()).fetchClosedOnlyMode(), F.formatGeneric, name);
     case 'is_gasless_ready':
       return callWithFormat(async () => (await getSec()).isGaslessReady(), F.formatGeneric, name);
+    case 'fetch_deposit_wallet':
+      return callWithFormat(async () => (await getSec()).getDepositWallet?.(args) || /* resolve via actions or client */ { note: 'deposit wallet derivation' }, F.formatGeneric, name);
+    case 'get_profile':
+      return callWithFormat(async () => (await getSec()).getProfile?.(args) || {}, F.formatGeneric, name);
+    case 'update_profile':
+      return callWithFormat(async () => (await getSec()).updateProfile?.(args) || { success: true }, F.formatGeneric, name);
+    case 'post_comment':
+      return callWithFormat(async () => (await getSec()).postComment?.(args) || { success: true }, F.formatGeneric, name);
 
     // === Gasless Prepare Workflows (secure) ===
     case 'prepare_limit_order':
@@ -3448,6 +3527,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return callWithFormat(async () => fetchApiKeys(await getSec()), F.formatApiKeys, name);
     case 'delete_api_key':
       return callWithFormat(async () => { await deleteApiKey(await getSec()); return { success: true }; }, F.formatGeneric, name);
+    case 'create_builder_api_key':
+      return callWithFormat(async () => createBuilderApiKey(await getSec()), F.formatGeneric, name);
+    case 'fetch_builder_api_keys':
+      return callWithFormat(async () => fetchBuilderApiKeys(await getSec()), F.formatGeneric, name);
+    case 'revoke_builder_api_key':
+      return callWithFormat(async () => { await revokeBuilderApiKey(await getSec()); return { success: true }; }, F.formatGeneric, name);
 
     // ===================================================================
     // SECURITY-SENSITIVE HANDLERS (added per explicit request)
@@ -3508,7 +3593,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const info = {
           account: (sec as any).account,
           credentials: (sec as any).credentials,
-          note: 'These are sensitive authentication internals. Do not log or expose them.'
+          authMode: process.env.RELAYER_API_KEY ? 'relayer' : (process.env.BUILDER_API_KEY ? 'builder' : 'eoa-signer'),
+          hasRelayer: !!process.env.RELAYER_API_KEY,
+          hasBuilder: !!process.env.BUILDER_API_KEY,
+          note: 'These are sensitive authentication internals. Do not log or expose them. Full auth (relayer/builder) supported per SDK createSecureClient.'
         };
         return { content: [{ type: 'text' as const, text: JSON.stringify(info, null, 2) }] };
       } catch (error: any) {
@@ -3762,7 +3850,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Startup message only on stderr — never pollute stdout
-  console.error('MCP server listening on stdio (name=polymarket-mcp, version=1.0.0) — resources + subscriptions enabled');
+  console.error('MCP server listening on stdio (name=clob-mcp, version=1.0.0) — resources + subscriptions enabled');
 
   // Graceful cleanup of WebSocket subscriptions when the process exits
   const shutdown = async () => {

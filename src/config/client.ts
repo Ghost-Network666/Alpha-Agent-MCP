@@ -1,6 +1,7 @@
 import {
   createPublicClient,
   createSecureClient,
+  allActions,
   type PublicClient,
   type SecureClient,
   type PublicActions,
@@ -14,19 +15,22 @@ let secureClientInstance: SecureClient<PublicActions, SecureActions> | null = nu
 
 export function getPublicClient(): PublicClient<PublicActions, SecureActions> {
   if (!publicClientInstance) {
-    publicClientInstance = createPublicClient();
-    logger.debug('Public client initialized');
+    // Explicit extend(allActions) for full exhaustive coverage of the unified TS SDK surface (discovery, data, analytics, etc.)
+    // per the documented client factory + decorator pattern.
+    const raw = createPublicClient();
+    publicClientInstance = raw.extend(allActions);
+    logger.debug('Public client initialized (with allActions)');
   }
   return publicClientInstance;
 }
 
 /**
- * Creates the SecureClient using exactly the required pattern per SDK + MCP spec:
+ * Creates the SecureClient using exactly the required pattern per SDK + MCP spec (full exhaustive):
  *   wallet = deposit wallet address (DEPOSIT_WALLET_ADDRESS or WALLET_ADDRESS)
  *   signer = privateKey(EOA_PRIVATE_KEY or PRIVATE_KEY) from @polymarket/client/viem
+ *   + relayer/builder/apiKey when present in env (for gasless + builder attribution per SDK createSecureClient options).
  *
- * No other auth patterns (no relayer/builder apiKey injection here). Gasless is
- * enabled post-creation via setupGaslessWallet() which returns a replacement client.
+ * Gasless is enabled post-creation via setupGaslessWallet() which returns a replacement client.
  */
 export async function getSecureClient(): Promise<SecureClient<PublicActions, SecureActions>> {
   if (secureClientInstance) return secureClientInstance;
@@ -39,8 +43,19 @@ export async function getSecureClient(): Promise<SecureClient<PublicActions, Sec
   }
 
   const signer = privateKey(pk);
-  secureClientInstance = await createSecureClient({ wallet, signer });
-  logger.info('Secure client initialized (EOA signer + deposit wallet only)');
+
+  // Full exhaustive auth support per SDK createSecureClient options + spec (relayer/builder/apiKey for gasless/attribution + EOA signer + deposit wallet).
+  // Explicit extend(allActions) for full surface (trading, wallet, secure account, rewards, etc.).
+  const config: any = { wallet, signer };
+  if (process.env.RELAYER_API_KEY && process.env.RELAYER_API_KEY_ADDRESS) {
+    config.apiKey = { key: process.env.RELAYER_API_KEY, address: process.env.RELAYER_API_KEY_ADDRESS };
+  } else if (process.env.BUILDER_API_KEY && process.env.BUILDER_SECRET && process.env.BUILDER_PASSPHRASE) {
+    // Builder HMAC path (SDK accepts via other means or post; here we note for completeness; gasless prefers relayer).
+    config.builder = { key: process.env.BUILDER_API_KEY, secret: process.env.BUILDER_SECRET, passphrase: process.env.BUILDER_PASSPHRASE };
+  }
+  const raw = await createSecureClient(config);
+  secureClientInstance = raw.extend(allActions);
+  logger.info('Secure client initialized (full auth support + EOA signer + deposit wallet, with allActions)');
   return secureClientInstance;
 }
 
