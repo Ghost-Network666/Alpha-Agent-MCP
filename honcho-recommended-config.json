@@ -1,0 +1,41 @@
+{
+  "memory": {
+    "mode": "hybrid",
+    "dialecticReasoningLevel": "high",
+    "dialecticMaxChars": 4096,
+    "storage": {
+      "basePath": "/mnt/large-ssd/honcho",
+      "vectorStorePath": "/mnt/large-ssd/honcho/vectors",
+      "dbPath": "/mnt/large-ssd/honcho/db"
+    },
+    "hybrid": {
+      "localModel": "dedicated-memory-model",
+      "localThreshold": 0.7
+    },
+    "maxItemsPerWorkspace": 50000,
+    "retentionDays": 365
+  },
+  "workspaces": {
+    "default": "Alpha",
+    "polymarket-reward-farming": {
+      "description": "Long-term memory for reward farming strategies, farmability scores, and successful maker orders."
+    },
+    "polymarket-mispricing-flips": {
+      "description": "Memory for mispricing detections, Bayesian updates, external signals (Kalshi, NLP), and quick flip outcomes."
+    },
+    "polymarket-x-intel": {
+      "description": "Storage for X/Twitter searches on polymarket topics, dev tweets, new market announcements."
+    }
+  },
+  "integration": {
+    "mcpTools": [
+      "suggest_qualified_size",
+      "get_farmability",
+      "compute_bayesian_update",
+      "get_strategies",
+      "list_active_maker_reward_markets"
+    ],
+    "storeToolResults": true,
+    "summarizeOnStore": true
+  }
+}

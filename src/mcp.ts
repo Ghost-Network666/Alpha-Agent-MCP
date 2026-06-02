@@ -1430,7 +1430,7 @@ const secureTools = [
   // === Maker Rewards Support Tools (to address agent feedback) ===
   {
     name: 'list_active_maker_reward_markets',
-    description: '[Rewards] Primary reward market discovery tool (kept in core set). Returns tiny ranked list with USD qualification costs. This is one of the few tools exposed by default. For everything else, use list_tool_categories + get_tools_by_category. The MCP gives you capabilities with structure — you decide the strategy.',
+    description: '[Rewards] Primary reward market discovery (core tool). Tiny ranked list (max 8) with yes/noTokenIds, real USD costs (minSize×mid), mids, dailyRate, volume/liquidity, attractiveness. Filter low cost for small cap. Per X insights: favors low min + decent rewards; cross with get_farmability for low-comp signals + near-mid feasibility; use list_events for resolution timing (avoid close-to-end per X). Use maxMinCostUsd:4.5 for $5 agents. No human options needed — ranked autonomous source.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1567,7 +1567,7 @@ const secureTools = [
   },
   {
     name: 'get_farmability',
-    description: '[Rewards] Single-call snapshot for a token: reward rules, current spread vs max allowed, liquidity, estimated cost to qualify, and a simple farmability score. Extremely high leverage for both reward farming decisions and quick mispricing flips. Call this before deciding to post maker orders.',
+    description: '[Rewards] PRIMARY pre-farm tool (SDK-native: fetchOrderBook + listMarketRewards + fetchSpreads). Snapshot: reward rules (minSize/maxSpread), live mid/spread vs allowed, book depth, cost to qualify, competitionSignal (low-comp proxy), suggestedNearMidBuy/Sell (for higher weighting per X insights), farmabilityScore, recommendation. Call first for every reward or flip decision. Also surfaces exact prices for sticky near-mid quoting + both-sides signals.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1584,7 +1584,7 @@ const secureTools = [
   // for persistent state while respecting Polymarket rate limits.
   {
     name: 'set_strategy',
-    description: '[Strategy] Store your own trading plan (entry, TP, SL, size, notes). One of the default core tools. The MCP stores it for you — you decide when and how to act on it using other tools.',
+    description: '[Strategy] Create or fully replace a trading plan. For editing specific fields (TP, SL, entry, size, notes, etc.) use the preferred `update_strategy` tool instead — it makes adapting filters much easier without resending everything.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1620,6 +1620,25 @@ const secureTools = [
       properties: {
         tokenId: { type: 'string' },
         market: { type: 'string' }
+      },
+      required: ['tokenId']
+    }
+  },
+  {
+    name: 'update_strategy',
+    description: '[Strategy] Edit specific fields of an existing strategy (TP, SL, entry, size, notes, etc.) without resending the whole plan. This is the easiest way for the agent to adapt filters, stop-loss, take-profit, or any other parameter dynamically. Only the provided fields are updated.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string', description: 'The tokenId of the strategy to update' },
+        market: { type: 'string', description: 'Optional market key if used when storing' },
+        entryPrice: { type: 'number' },
+        takeProfitPrice: { type: 'number' },
+        stopLossPrice: { type: 'number' },
+        size: { type: 'number' },
+        side: { type: 'string', enum: ['BUY', 'SELL'] },
+        notes: { type: 'string' },
+        maxWaitSecondsBetweenChecks: { type: 'number' }
       },
       required: ['tokenId']
     }
@@ -1698,6 +1717,7 @@ const CORE_TOOL_NAMES = new Set([
   'wait_seconds',
   'get_strategies',
   'set_strategy',
+  'update_strategy',                  // Preferred way to adapt TP/SL/filters dynamically
   'clear_strategy',
   'get_balance_allowance',
   'list_active_maker_reward_markets',
@@ -1710,7 +1730,7 @@ const CORE_TOOL_NAMES = new Set([
 const PROMPTS = [
   {
     name: 'reward_farming_best_practices',
-    description: 'Best practices for autonomous maker reward farming with small capital. Covers sizing rules (maker flexible to program min, taker $5 cap), using categories, suggest_qualified_size, get_farmability, avoiding rate limits, and staying autonomous without asking for options.',
+    description: 'Best practices + current X Key Insights (daily USDC LP rewards, quote near midpoint, both-sides 2x, sticky auto-repegging post-only as major edge, low-competition focus, avoid near-resolution, time/size-weighted, 24/7 active, adverse selection risks) for autonomous maker reward farming. Includes exact mapping to simple native SDK tools (get_farmability for near-mid + signals, place_*_reward for postOnly sticky, etc.). Use with categories to stay tiny.',
     arguments: []
   },
   {
@@ -2784,9 +2804,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const tokenId = args.tokenId;
 
       try {
-        const [book, rewards] = await Promise.all([
+        const [book, rewards, spreads] = await Promise.all([
           pub.fetchOrderBook({ tokenId }).catch(() => null),
           pub.listMarketRewards({ conditionId: tokenId }).catch(() => null),
+          pub.fetchSpreads({ tokenIds: [tokenId] }).catch(() => null),
         ]);
 
         const program = rewards?.items?.[0];
@@ -2798,15 +2819,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const mid = (bestBid && bestAsk) ? (bestBid + bestAsk) / 2 : null;
         const currentSpread = (bestBid && bestAsk) ? (bestAsk - bestBid) : null;
 
-        const spreadVsAllowed = (currentSpread && maxSpread) ? (currentSpread / maxSpread) : null;
+        // Use SDK fetchSpreads for more accurate current spread vs reward max
+        const spreadData = spreads && spreads[tokenId] ? spreads[tokenId] : null;
+        const accurateCurrentSpread = spreadData ? parseFloat(spreadData.spread || currentSpread || 0) : currentSpread;
+        const spreadVsAllowed = (accurateCurrentSpread && maxSpread) ? (accurateCurrentSpread / maxSpread) : null;
 
         const costToQualify = (minSize && mid) ? minSize * mid : null;
 
+        // Proxy for sufficient volume/active flow: if book has reasonable depth on sides (SDK fetchOrderBook)
+        const bidDepth = book?.bids?.slice(0, 3).reduce((sum, b) => sum + parseFloat(b.size || 0), 0) || 0;
+        const askDepth = book?.asks?.slice(0, 3).reduce((sum, a) => sum + parseFloat(a.size || 0), 0) || 0;
+
+        // X Key Insights integration (SDK-native only, advisory): "Quote near the midpoint for higher reward weighting"
+        // + "sticky (auto-repegging post-only)" edge via postOnly GTC + reprice. Low-competition proxy from depth.
+        let suggestedNearMidBuy: number | undefined;
+        let suggestedNearMidSell: number | undefined;
+        if (mid != null) {
+          suggestedNearMidBuy = Number(Math.max(0.001, mid - 0.0008).toFixed(4));
+          suggestedNearMidSell = Number(Math.min(0.999, mid + 0.0008).toFixed(4));
+        }
+        const totalDepth = bidDepth + askDepth;
+        const depthImbalance = totalDepth > 0 ? Math.abs(bidDepth - askDepth) / totalDepth : 1;
+        const competitionSignal = totalDepth < 300 ? 'thin-book (verify flow; potential low-comp but check activity)' :
+          (totalDepth > 8000 ? 'deep-book (high competition likely; harder for sticky edge)' :
+           (depthImbalance < 0.5 ? 'balanced-moderate depth (favorable for active sticky quoting)' : 'imbalanced depth (adverse selection risk higher)'));
+
+        // Enhanced scoring per farming requirements (volume/liquidity via book depth proxy, tight spread, active flow via spread tightness)
         let farmabilityScore = 0;
-        if (minSize > 0 && mid) farmabilityScore += 30;
-        if (spreadVsAllowed && spreadVsAllowed < 0.8) farmabilityScore += 40;
-        if (currentSpread && currentSpread < 0.02) farmabilityScore += 20;
-        if (costToQualify && costToQualify < 10) farmabilityScore += 10;
+        if (minSize > 0 && mid) farmabilityScore += 25; // reward eligible
+        if (spreadVsAllowed && spreadVsAllowed < 0.7) farmabilityScore += 35; // tight spread vs allowed (avoid wide)
+        if (accurateCurrentSpread && accurateCurrentSpread < 0.015) farmabilityScore += 20; // very tight current spread
+        if (costToQualify && costToQualify < 8) farmabilityScore += 15; // low inventory risk for small cap
+        if (totalDepth > 1000) farmabilityScore += 5; // active order flow proxy
+        if (suggestedNearMidBuy && accurateCurrentSpread && accurateCurrentSpread < 0.01) farmabilityScore += 5; // near-mid possible within tight spread (higher weighting)
+
+        const recommendation = farmabilityScore > 75 ? "Excellent for maker farming - tight spread, low cost, good eligibility, near-mid quoting feasible" :
+                              farmabilityScore > 55 ? "Good candidate - monitor for active flow and reprice as needed; use near-mid quotes" :
+                              farmabilityScore > 35 ? "Marginal - check for wide spreads or low activity; consider smaller test size or different market" :
+                              "Poor right now - wide spread vs allowed, high cost, or low eligibility. Look for better opportunities per exit rules.";
 
         return {
           content: [{
@@ -2817,12 +2867,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               rewardsMinSize: minSize || undefined,
               rewardsMaxSpread: maxSpread || undefined,
               currentMid: mid ? Number(mid.toFixed(4)) : undefined,
-              currentSpread: currentSpread ? Number(currentSpread.toFixed(4)) : undefined,
+              currentSpread: accurateCurrentSpread ? Number(accurateCurrentSpread.toFixed(4)) : undefined,
               spreadVsMaxAllowed: spreadVsAllowed ? Number(spreadVsAllowed.toFixed(2)) : undefined,
               costToQualifyUsd: costToQualify ? Number(costToQualify.toFixed(2)) : undefined,
+              approximateBookDepth: Number(totalDepth.toFixed(0)),
+              suggestedNearMidBuy: suggestedNearMidBuy,
+              suggestedNearMidSell: suggestedNearMidSell,
+              competitionSignal: competitionSignal,
               farmabilityScore: Math.min(100, farmabilityScore),
-              recommendation: farmabilityScore > 70 ? "Strong candidate for maker farming" : 
-                              farmabilityScore > 40 ? "Marginal - check liquidity" : "Poor for small size right now",
+              recommendation,
+              notes: "SDK-native only (fetchOrderBook + listMarketRewards + fetchSpreads). Quote near midpoint (use suggestedNearMidBuy/Sell) for higher reward weighting. Both-sides (yes+no) for 2x when possible. Use place_maker_reward_order (forces postOnly GTC) + active reprice/monitor for 'sticky' major edge. Thin/moderate depth = potential low-competition; avoid high adverse selection. Exit on spread collapse, low activity, or better low-comp opp. Use with suggest_qualified_size + list_active_maker_reward_markets."
             }, null, 2)
           }]
         };
@@ -2896,6 +2950,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             success: true,
             deleted: existed,
             key
+          }, null, 0)
+        }]
+      };
+    }
+
+    case 'update_strategy': {
+      const key = getStrategyKey(args.tokenId, args.market);
+      const existing = strategyStore.get(key) || {
+        tokenId: args.tokenId,
+        market: args.market || null,
+        entryPrice: null,
+        takeProfitPrice: null,
+        stopLossPrice: null,
+        size: null,
+        side: null,
+        notes: '',
+        maxWaitSecondsBetweenChecks: 30,
+        updatedAt: new Date().toISOString()
+      };
+
+      // Merge only the provided fields (partial update)
+      const updated = {
+        ...existing,
+        ...(args.entryPrice !== undefined && { entryPrice: args.entryPrice }),
+        ...(args.takeProfitPrice !== undefined && { takeProfitPrice: args.takeProfitPrice }),
+        ...(args.stopLossPrice !== undefined && { stopLossPrice: args.stopLossPrice }),
+        ...(args.size !== undefined && { size: args.size }),
+        ...(args.side !== undefined && { side: args.side }),
+        ...(args.notes !== undefined && { notes: args.notes }),
+        ...(args.maxWaitSecondsBetweenChecks !== undefined && { maxWaitSecondsBetweenChecks: args.maxWaitSecondsBetweenChecks }),
+        updatedAt: new Date().toISOString()
+      };
+
+      strategyStore.set(key, updated);
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            success: true,
+            message: "Strategy updated (only provided fields changed).",
+            key,
+            strategy: updated,
+            directive: "Use get_strategies to confirm. Continue using suggest_qualified_size + get_farmability for ongoing decisions."
           }, null, 0)
         }]
       };
@@ -3307,28 +3405,94 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 
   let content = '';
   if (name === 'reward_farming_best_practices') {
-    content = `Use list_tool_categories first to see groups like Rewards, Strategy, Account.
-Load only what you need with get_tools_by_category("Rewards").
-For sizing: ALWAYS call suggest_qualified_size with correct intent before placing.
-- For reward_farming or maker (postOnly/GTC): size to the program's rewardsMinSize (use get_farmability or list_active to discover).
-- For market_taker or quick_flip: default to $5 max unless highConfidenceEdge.
-Use get_farmability(tokenId) before deciding to farm a market (gives spread vs allowed, cost, score).
-Use compute_bayesian_update for mispricing signals.
-Store plans with set_strategy so you remember SL/TP across steps.
-Use wait_seconds for rate limits and discipline.
-Never ask user for options; use the directives from tools.
-Call get_strategies often to recall your plans.
-For weather/sports: use list_events or search with category filters.`;
+    content = `KEY INSIGHTS FROM X (current tactics for daily USDC LP maker rewards — incorporate directly):
+
+Polymarket runs daily USDC LP rewards for limit orders placed within a “max spread” (often shown as a blue zone in the order book).
+Best practices commonly mentioned:
+- Quote near the midpoint for higher reward weighting.
+- Quote both sides (Yes + No) when possible for 2x weighting.
+- Use “sticky” (auto-repegging post-only) orders — these are considered a major edge.
+- Focus on low-competition markets with decent rewards.
+- Avoid markets close to resolution.
+- Rewards are time-weighted and size-weighted.
+
+Risks highlighted:
+- Adverse selection (getting filled badly on one side during a move).
+- Need to stay active and competitive.
+- Some users run 24/7 bots to maintain uptime.
+- Rate limit complaints were not visible on X recently.
+
+This gives concrete, current tactics. MCP surfaces them natively via simple SDK-only tools so the agent has easier work: call get_farmability first (surfaces suggestedNearMidBuy/Sell + competitionSignal from live book/spreads), use suggested prices with postOnly GTC (via place_*_reward_order tools which force sticky-eligible orders), both sides where yes/noTokenId available in list_active, filter low-comp + distant resolution via signals + list_events if needed.
+
+MARKET FARMING FRAMEWORK (follow exactly for autonomy):
+
+OBJECTIVE: Maximize reward yield while minimizing inventory risk and directional exposure.
+
+FARMING REQUIREMENTS (use get_farmability + list_active_maker_reward_markets to confirm):
+- Reward eligible market confirmed (via listCurrentRewards / get_farmability).
+- Sufficient daily volume (proxy via book depth + fetchEventLiveVolume if event available).
+- Tight spread (current spread << rewardsMaxSpread; use get_farmability).
+- Active order flow (monitor both sides; reprice stale).
+- Acceptable inventory risk (use suggest_qualified_size for maker; limit directional via portfolio tools).
+
+AVOID (filter via discovery + get_farmability):
+- Dead markets (low volume/activity).
+- Wide spreads (spreadVsMaxAllowed high).
+- Low liquidity (shallow book depth).
+- Markets near major announcements (check end dates via list_events/fetch_event).
+- Unclear resolution (review event details).
+- Markets close to resolution (X insight: avoid; prefer distant end dates for sustained time-weighted rewards).
+
+ORDER PLACEMENT (maker only for farming):
+- Prefer postOnly/GTC maker orders (place_maker_reward_order / place_optimized_reward_order — these are the native sticky tools; SDK createLimitOrder + postOrder only, no custom).
+- Use suggest_qualified_size (intent="reward_farming" or "maker") to size to actual rewardsMinSize (time+size weighted rewards favor staying qualified).
+- Maintain competitive queue: quote near midpoint (get_farmability now returns suggestedNearMidBuy/Sell for higher weighting).
+- Reprice stale orders (cancel + re-place using SDK) for the auto-repegging "sticky" edge — major advantage per X.
+- Monitor both sides of book (fetchOrderBook + get_farmability). Quote both Yes + No for 2x when program allows.
+- Avoid chasing fills (no market orders for farming). Stay active/competitive (24/7 bot pattern for uptime on time-weighted rewards).
+
+INVENTORY MANAGEMENT:
+- Keep directional exposure limited (use listPositions + fetchPortfolioValue).
+- Reduce imbalance quickly (adverse selection risk per X).
+- Monitor total market exposure across strategies (get_strategies + portfolio).
+- Never allow reward farming to become a directional bet (exit rules below).
+
+REWARD EFFICIENCY (track via earnings tools + get_strategies):
+- Rewards earned (listUserEarnings*, fetchRewardPercentages, fetchTotalEarningsForUserForDay).
+- Capital deployed (suggest_qualified_size + get_farmability).
+- Reward yield, fill rate, inventory exposure, net P&L including rewards.
+
+FARMING EXIT RULES (monitor with get_farmability + watches):
+Exit or reduce size when:
+- Reward efficiency falls.
+- Spread collapses (spreadVsMaxAllowed worsens).
+- Market activity drops (volume/depth down).
+- Inventory risk increases or adverse selection appears (use portfolio tools + competitionSignal).
+- Better farming opportunities appear (re-scan with list_active_maker_reward_markets or get_farmability — prioritize low-competition + decent rewards + distant resolution).
+
+Use (simple native tools for easy agent work, all SDK under the hood):
+- list_tool_categories + get_tools_by_category("Rewards") for discovery (keeps surface tiny).
+- get_farmability(tokenId) as PRIMARY pre-farm check (SDK fetchOrderBook + listMarketRewards + fetchSpreads; now includes near-mid suggestions, spread vs allowed, depth, competitionSignal, score).
+- suggest_qualified_size for correct sizing per rules (no artificial caps for makers).
+- set_strategy / update_strategy / get_strategies for your plans (easy partial edits to filters/TP/SL without full resend).
+- list_active_maker_reward_markets (core, ranked, tiny, with yes/no + real USD costs + mids).
+- compute_bayesian_update if combining with mispricing signals.
+- wait_seconds for rate limit discipline and 24/7 active loops.
+- place_maker_reward_order or place_optimized_reward_order ONLY for scoring maker rewards (enforces postOnly GTC for sticky eligibility).
+- Never ask user for "next move options" — follow directives from tools + your stored strategies + this prompt + X insights. Autonomous loop: list_active → get_farmability (pick near-mid) → suggest_size → set_strategy → place → monitor/reprice on signals → exit or rotate to better low-comp market.
+
+Store reflections in long-term memory after sessions. Reprice and monitor continuously for the sticky edge. Stay active.`;
   } else if (name === 'mispricing_quick_flips') {
-    content = `For quick flips on mispriced markets:
-1. Use list_active_maker_reward_markets with maxMinCostUsd for affordable ones, or search for liquid 20-80 cent markets.
-2. Use get_farmability to check current conditions and liquidity.
-3. For signals: use compute_bayesian_update with your prior (Polymarket price) + external signal (e.g. from research or Kalshi).
-4. Sizing: use suggest_qualified_size with intent="quick_flip" (cap $5 unless high edge).
-5. Place with create_and_post_order or place_maker_reward_order (maker preferred for fees/rewards).
-6. Store in strategy with set_strategy for TP/SL.
-Monitor with watch_order_until_filled and resources.
-Use categories to keep tool list small.`;
+    content = `For quick flips on mispriced markets (aligns with external Bayesian scanners):
+1. Scan liquid opportunities: list_active_maker_reward_markets (with maxMinCostUsd) or list_markets with volume/liquidity filters for 20-80 cent range. Prioritize high volume/liquidity to avoid dead/wide spread markets.
+2. Use get_farmability(tokenId) to confirm tight spreads, liquidity (book depth), and low inventory risk before flipping.
+3. For signals: use compute_bayesian_update (prior = Polymarket price; signal = external/Kalshi/NLP estimate; weight 0.3-0.6). Flag >=5pp divergence (strong at 8pp).
+4. Sizing: use suggest_qualified_size with intent="quick_flip" (hard $5 cap unless highConfidenceEdge=true for near-guaranteed edge).
+5. Prefer maker (create_and_post_order with postOnly) for cost efficiency; avoid market orders unless edge is strong.
+6. Store plan + TP/SL in set_strategy. Monitor with watch_order_until_filled + resources.
+7. Exit rules: wide spread, low activity, or better opportunity appears (re-scan).
+
+Always cross with reward_farming_best_practices if the market also qualifies for maker rewards. Use categories + wait_seconds for discipline. Never ask user for options.`;
   } else if (name === 'mcp_tool_structure_and_categories') {
     content = `The MCP uses categories to give you structure with minimal tools loaded by default.
 Default core is small: list_tool_categories, get_tools_by_category, wait_seconds, get_strategies, set_strategy, clear_strategy, get_balance_allowance, list_active_maker_reward_markets, suggest_qualified_size.
