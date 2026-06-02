@@ -1236,7 +1236,7 @@ const secureTools = [
   },
   {
     name: 'post_orders',
-    description: 'Post multiple pre-signed orders',
+    description: '[Trading] Post multiple pre-signed SignedOrders in one request (up to 15). Strongly preferred for market makers doing two-sided or multi-level quoting/requoting to reduce latency and roundtrips vs individual places. Essential for volume without triggering CLOB V2 place-path contention. Use with createLimitOrder etc. on secure client.',
     inputSchema: { type: 'object', properties: {} }
   },
 
@@ -1433,7 +1433,7 @@ const secureTools = [
   // === Maker Rewards Focused Workflow (High Success Rate for Earning Rewards) ===
   {
     name: 'place_maker_reward_order',
-    description: '[Rewards] STRICT REWARD-ONLY TOOL. Forces GTC+postOnly and only succeeds on confirmed scoring orders. IMPORTANT: Polymarket CLOB is rate-limited. Do NOT call this (or list_active_maker_reward_markets) in a tight loop. Add 4-8s delays between attempts or you will make the MCP server unreachable. On any failure you get a strong autonomous directive instead of "what do you want me to do?".',
+    description: '[Rewards] STRICT REWARD-ONLY TOOL. Forces GTC+postOnly and only succeeds on confirmed scoring orders. For volume/requoting: prefer batching via post_orders where possible. See CLOB V2 place latency/contention warnings in reward_farming_best_practices prompt (heavy individual requotes ~200+/sec cause 400ms+ place delays even under limits). IMPORTANT: rate-limited — do NOT tight-loop; use wait_seconds + your strategy requote policy. On failure you get strong autonomous directive.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1499,7 +1499,7 @@ const secureTools = [
   },
   {
     name: 'place_optimized_reward_order',
-    description: 'High-level automation helper. Suggests optimal parameters for a market, validates them against current reward rules, places the order as a pure maker, confirms it is scoring, and can optionally monitor fills. This reduces the number of manual steps an agent needs to perform for reward farming.',
+    description: 'High-level automation helper. Suggests optimal parameters for a market, validates them against current reward rules, places the order as a pure maker (postOnly GTC), confirms it is scoring, and can optionally monitor fills. Reduces steps for reward farming. For volume/requoting: combine with batch post_orders. Respect CLOB V2 place latency realities (see reward_farming_best_practices — avoid 200+/sec individual requotes).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -3497,7 +3497,20 @@ Risks highlighted:
 - Some users run 24/7 bots to maintain uptime.
 - Rate limit complaints were not visible on X recently.
 
-This gives concrete, current tactics. MCP surfaces them natively via simple SDK-only tools so the agent has easier work: call get_farmability first (surfaces suggestedNearMidBuy/Sell + competitionSignal from live book/spreads), use suggested prices with postOnly GTC (via place_*_reward_order tools which force sticky-eligible orders), both sides where yes/noTokenId available in list_active, filter low-comp + distant resolution via signals + list_events if needed.
+**CLOB V2 Place-Path Contention for Heavy Requoting (post ~April 2026 migration, confirmed by multiple makers):**
+At high requote rates (~200-250+/sec on one maker/account, even well under published POST /order burst ~5k/10s and with zero 429s), *place* latency floor jumps dramatically (19ms → 400ms+), while cancels stay fast (~30ms). This is server-side (same wallet from different IPs/machines degrades together and recovers instantly when you stop). It manifests as delayed placement (orders accepted but slow to rest on book), not rejections — looks like backend queuing/contention on the place hot path (Cloudflare throttling + matching engine/ledger load protection in the rewritten V2 CLOB backend). Not a hard rate limit, but self-induced (and account-induced) slowdown that hurts "near-mid" queue position and reward scoring.
+
+This issue is intentional protection for the engine under aggressive maker activity. It started with CLOB V2.
+
+**How to requote at volume without tripping it (critical for sticky reward edge):**
+- **Batch first**: Always prefer \`post_orders\` (up to 15 pre-signed orders per call) over many individual place_maker_reward_order / place_optimized calls when updating quotes/levels/both-sides. Batching reduces roundtrips and latency.
+- **Enforce conservative policy in your strategyStore** (get_strategies() first every loop, evolve via update_strategy): e.g. \`maxRequoteRatePerSidePerSec: 5-20\` (much lower than 250), \`minRequoteIntervalMs: 150-500\`, \`requoteOnlyOnDrift: true\` (only when mid moves >1-2 ticks or order age > threshold), \`bothSides: true\` but coordinated.
+- **Leverage sticky + WS**: Place once with postOnly GTC near-mid (the reward place tools enforce this). Use live resources (\`polymarket://market/{tokenId}/book\`, \`user/orders\`) + \`get_farmability\` (fresh book + signals) to *decide* when a reprice is actually needed instead of timer-driven micro-requotes. Let the auto-repegging "sticky" edge do work for you.
+- **Discipline with wait_seconds**: Insert explicit backoffs (100-300ms+) between place actions on the same token/side. The wait_seconds tool exists for rate discipline and to avoid queue buildup.
+- **Monitor & backoff autonomously**: Track place response times in your rules. If p99 place > ~100-150ms, immediately update_strategy to lower rate, rotate to a different market from list_active_maker_reward_markets, or pause. Follow agentDirectives.
+- **Other**: Use GTD for time-bound quotes, cancel stale immediately (cancels are lighter), prefer WS over REST polling for data, consider co-lo near eu-west-2 for raw network floor if doing serious volume.
+
+The MCP (strategy as your brain + explicit native place tools + WS resources + wait_seconds) lets *you* implement smart requoting without ever guessing or hardcoding in your context. 250/sec aggressive requoting will reliably produce the 400ms+ place latency you observed — design your rules to stay out of that regime while still capturing the time/size-weighted rewards edge.
 
 MARKET FARMING FRAMEWORK (follow exactly for autonomy):
 
@@ -3522,9 +3535,9 @@ ORDER PLACEMENT (maker only for farming):
 - Prefer postOnly/GTC maker orders (place_maker_reward_order / place_optimized_reward_order — these are the native sticky tools; SDK createLimitOrder + postOrder only, no custom).
 - Use suggest_qualified_size (intent="reward_farming" or "maker") to size to actual rewardsMinSize (time+size weighted rewards favor staying qualified).
 - Maintain competitive queue: quote near midpoint (get_farmability now returns suggestedNearMidBuy/Sell for higher weighting).
-- Reprice stale orders (cancel + re-place using SDK) for the auto-repegging "sticky" edge — major advantage per X.
+- Reprice *intelligently and sparingly* (see CLOB V2 contention warning above): only when drift or staleness warrants it per your strategy rules. Use batch post_orders where possible, WS + get_farmability for signals instead of blind high-frequency replace loops. The "sticky" post-only GTC + auto-repeg is the edge — over-requoting (e.g. 200+/sec) causes place latency spikes even under rate limits.
 - Monitor both sides of book (fetchOrderBook + get_farmability). Quote both Yes + No for 2x when program allows.
-- Avoid chasing fills (no market orders for farming). Stay active/competitive (24/7 bot pattern for uptime on time-weighted rewards).
+- Avoid chasing fills (no market orders for farming). Stay active/competitive (24/7 bot pattern for uptime on time-weighted rewards) but respect place-path realities.
 
 INVENTORY MANAGEMENT:
 - Keep directional exposure limited (use listPositions + fetchPortfolioValue).
@@ -3554,7 +3567,7 @@ Use (simple native tools for easy agent work, all SDK under the hood):
 - compute_bayesian_update if combining with mispricing signals.
 - wait_seconds for rate limit discipline and 24/7 active loops.
 - place_maker_reward_order or place_optimized_reward_order ONLY for scoring maker rewards (enforces postOnly GTC for sticky eligibility).
-- Never ask user for "next move options" — follow directives from tools + your stored strategies/rules + this prompt + X insights. Autonomous loop: get_strategies() to load your rules → list_active (respect your filters) → get_farmability (near-mid + signals) → suggest_size → update_strategy (log results / tweak rules) → place → monitor/reprice → exit or rotate per your stored rules.
+- Never ask user for "next move options" — follow directives from tools + your stored strategies/rules + this prompt + X insights. Autonomous loop: get_strategies() to load your rules (incl. your requote throttling policy for CLOB V2 place contention) → list_active (respect your filters) → get_farmability (near-mid + signals) → suggest_size → update_strategy (log results / tweak rules) → place (batch via post_orders if multi) → monitor via resources or get_farmability (reprice *only* per your drift/interval rules, with wait_seconds) → exit or rotate per your stored rules. If place latency spikes, back off rate immediately.
 
 Store reflections in long-term memory after sessions. Reprice and monitor continuously for the sticky edge. Stay active. Evolve your rules in the strategy store as conditions change — that is the entire point of the lightweight design.`;
   } else if (name === 'mispricing_quick_flips') {

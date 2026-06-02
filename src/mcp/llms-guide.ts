@@ -113,7 +113,9 @@ Official: https://docs.polymarket.com/market-makers/* (overview, liquidity-rewar
 - list_current_rewards / list_market_rewards are RAW (large) — docs steer agents to list_active... + get_farmability instead for autonomy.
 - Other: get_current_rebated_fees_for_maker.
 
-**Farming loop (native, no guess)**: get_strategies() → list_active... (your filters from strategy) → get_farmability(token) → suggest_qualified_size({intent:"reward_farming", ...}) → update_strategy (log) → place_maker... → resources watch or list_open + reprice on signals → exit per your rules in strategy (e.g. spread collapse, better opp). Use wait_seconds. Follow directives.
+**Farming loop (native, no guess)**: get_strategies() → list_active... (your filters from strategy) → get_farmability(token) → suggest_qualified_size({intent:"reward_farming", ...}) → update_strategy (log, including your requote throttling) → place_maker... (batch with post_orders when doing multiple) → resources watch or list_open + reprice *only per your conservative drift/interval rules* (CLOB V2 place-path contention: 200+/sec requotes on one account reliably causes 400ms+ place latency even with no 429s; cancels are lighter; use WS + get_farmability signals, wait_seconds, max ~5-20/sec per side via strategy policy) → exit or rotate per your stored rules. Follow directives.
+
+**CLOB V2 requoting note**: Heavy requoting for "sticky" rewards can trigger server-side queuing on the place path (per-wallet, cross-IP for same account). Design your strategy rules (max rate, drift threshold, batching) to avoid it while still earning. See reward_farming_best_practices prompt for details.
 
 ### Activity, Portfolio, Notifications
 - list_activity({limit?}) — full lifecycle + now rebates (MAKER_REBATE etc). formatActivity gives Type, Amount, Side, Price, Title.

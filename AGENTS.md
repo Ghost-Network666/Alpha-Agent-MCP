@@ -165,7 +165,25 @@ Never load Advanced unless you need the capabilities and trust the setup.
 6. Monitor/reprice using resources or `fetch_order_book` + cancel + re-place.
 7. Always load `get_strategies()` at start of loop. Use `wait_seconds` between actions. Follow agentDirectives (e.g., on failure: immediately pick a *different* market from list_active, never retry same).
 
-See full details in the `reward_farming_best_practices` prompt.
+See full details in the `reward_farming_best_practices` prompt (it now includes dedicated guidance on CLOB V2 place-path contention for heavy requoting).
+
+### CLOB V2 Requoting Latency & Contention for Makers (post-April 2026)
+Heavy requoting (frequent cancel+replace or rapid near-mid updates for "sticky" rewards, e.g. 200-250/sec on one account) causes server-side queuing on the *place* path: place latency floor jumps from ~20ms to 400ms+ (while cancels stay ~30ms). This is reproducible across IPs for the same wallet and recovers instantly when you stop. No 429s — just delayed resting on book. It is a real backend characteristic of the rewritten CLOB V2 (Cloudflare + matching/ledger protection on the hot place path for high-frequency quote updates).
+
+**Implications for agents**:
+- Aggressive timer-based requoting will make you "late" to the desired price level, hurting queue position, fill rates, and reward scoring even if you stay "within limits."
+- The MCP's `place_maker_reward_order` / `place_optimized_reward_order` (postOnly GTC) + "sticky auto-repegging" edge is still powerful, but you must not over-do the reprice frequency.
+
+**How the MCP helps you avoid it (never guess)**:
+- Store explicit policy in strategyStore (e.g. `maxRequoteRatePerSidePerSec: 10`, `minRequoteIntervalMs: 200`, `requoteDriftThreshold: 0.001`, `useBatching: true`).
+- `get_strategies()` first every loop; `update_strategy` to adapt based on observed latency.
+- Prefer WS resources + `get_farmability` (live signals) over pure time-based loops to decide *when* to reprice.
+- Use `post_orders` (batch up to 15) for multi-level or both-sides updates instead of many singles.
+- `wait_seconds({seconds: 0.1-0.3})` between place actions on same side/token.
+- In `reward_farming_best_practices` prompt + your rules: "reprice intelligently and sparingly"; if place p99 spikes, back off and rotate markets via `list_active_maker_reward_markets`.
+- `place_*_reward_order` tools already enforce the sticky postOnly GTC that lets the engine help with repegging.
+
+Load the `reward_farming_best_practices` and `mcp_llms_full_guide` prompts for the full current mapping. Design your evolved strategy rules (not the MCP code) to stay in the low-latency regime while capturing rewards. This is exactly why strategyStore exists as the agent's brain.
 
 ### Quick Flips / Mispricing
 Similar: use `list_markets` or `list_active...` for candidates, `get_farmability` for edge/liquidity, `compute_bayesian_update` for signals, `suggest_qualified_size({intent: "quick_flip", highConfidenceEdge: true})`, store in strategy, place with postOnly where possible. Cross with farming prompt if rewards apply.
