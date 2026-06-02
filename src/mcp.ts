@@ -15,6 +15,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { getPublicClient, getSecureClient, setupGaslessWallet } from './lib.js';
 import * as F from './formatters.js';
+import { getMarket } from './data/markets.js';
 import {
   placeLimitOrder as sportsPlaceLimitOrder,
   placeMarketOrder as sportsPlaceMarketOrder,
@@ -329,7 +330,7 @@ const publicTools = [
 
   {
     name: 'list_markets',
-    description: '[Discovery] List Polymarket markets using the official SDK listMarkets(). Supports filters like category (WEATHER, SPORTS etc.), rewardsMinSize for farming, search, volume, liquidity. Use for mispricing scans or reward discovery. Pass category or rewardsMinSize for structure.',
+    description: '[Discovery] List Polymarket markets using the official SDK listMarkets(). Supports filters like category (WEATHER, SPORTS etc.), rewardsMinSize for farming, search, volume, liquidity, and clobTokenIds (array of specific CLOB token IDs) to filter. Note: fetchMarket() SDK only supports id/slug/url; for fetching by tokenId we internally resolve via listMarkets({ clobTokenIds: [tokenId] }) in the fetch_market tool + getMarket helper. Use for mispricing scans or reward discovery. Pass category or rewardsMinSize for structure.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -340,6 +341,8 @@ const publicTools = [
         rewardsMinSize: { type: 'number', description: 'For farming: min size filter from SDK' },
         volumeNumMin: { type: 'number' },
         liquidityNumMin: { type: 'number' },
+        clobTokenIds: { type: 'array', items: { type: 'string' } },
+        conditionIds: { type: 'array', items: { type: 'string' } },
         pageSize: { type: 'number' },
         limit: { type: 'number' },
         offset: { type: 'number' }
@@ -348,13 +351,14 @@ const publicTools = [
   },
   {
     name: 'fetch_market',
-    description: 'Fetch a single market by id, slug or url',
+    description: 'Fetch a single market by id, slug, url or tokenId (e.g. yes/no clobTokenId from reward lists or orders). Supports fetching the specific market for a given token.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
         slug: { type: 'string' },
-        url: { type: 'string' }
+        url: { type: 'string' },
+        tokenId: { type: 'string' }
       }
     }
   },
@@ -743,14 +747,18 @@ const publicTools = [
   },
 
   // === Additional Gamma / Discovery (public, completes all categories: tags, series, builder data, holders, interest, live volume) ===
+  // Note: schemas aligned to SDK post-971f6a3 (dropped includeChat/categories* from tags/series; RelatedTag camelCase)
   {
     name: 'list_tags',
-    description: 'List all tags (categories) used across markets and events',
+    description: 'List all tags (categories) used across markets and events. (SDK now drops includeChat; closed not supported here—use status on related resources.)',
     inputSchema: {
       type: 'object',
       properties: {
         pageSize: { type: 'number' },
-        closed: { type: 'boolean' }
+        includeTemplate: { type: 'boolean' },
+        isCarousel: { type: 'boolean' },
+        locale: { type: 'string' },
+        ascending: { type: 'boolean' }
       }
     }
   },
@@ -761,18 +769,22 @@ const publicTools = [
       type: 'object',
       properties: {
         id: { type: 'string' },
-        slug: { type: 'string' }
+        slug: { type: 'string' },
+        includeTemplate: { type: 'boolean' },
+        locale: { type: 'string' }
       }
     }
   },
   {
     name: 'fetch_related_tags',
-    description: 'Fetch tags related to a given tag',
+    description: 'Fetch tags related to a given tag (post-SDK: tagId/relatedTagId are now camelCase normalized)',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
-        slug: { type: 'string' }
+        slug: { type: 'string' },
+        omitEmpty: { type: 'boolean' },
+        status: { type: 'string', enum: ['closed', 'all', 'active'] }
       }
     }
   },
@@ -820,12 +832,15 @@ const publicTools = [
 
   {
     name: 'list_series',
-    description: 'List market series (grouped markets)',
+    description: 'List market series (grouped markets). (SDK update: dropped unsupported categoriesIds/categoriesLabels/includeChat)',
     inputSchema: {
       type: 'object',
       properties: {
         pageSize: { type: 'number' },
-        closed: { type: 'boolean' }
+        closed: { type: 'boolean' },
+        locale: { type: 'string' },
+        excludeEvents: { type: 'boolean' },
+        recurrence: { type: 'string', enum: ['daily', 'weekly', 'monthly'] }
       }
     }
   },
@@ -836,7 +851,8 @@ const publicTools = [
       type: 'object',
       properties: {
         id: { type: 'string' },
-        slug: { type: 'string' }
+        slug: { type: 'string' },
+        locale: { type: 'string' }
       }
     }
   },
@@ -1080,7 +1096,7 @@ const secureTools = [
   },
   {
     name: 'list_activity',
-    description: 'List recent account activity',
+    description: 'List recent account activity (includes TRADE, SPLIT, MERGE, REDEEM, MAKER_REBATE, REWARD, REFERRAL_REWARD, YIELD, CONVERSION etc. Rebates are present here via the SDK activity method — no separate rebate tool needed).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1100,7 +1116,12 @@ const secureTools = [
   },
   {
     name: 'setup_trading_approvals',
-    description: 'Set up trading approvals (ERC20 + CTF)',
+    description: 'Set up trading approvals (ERC20 + CTF). Includes auto-redeem approval for redemption workflows (as noted: auto-redeem is a contract approval).',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'enable_auto_redeem',
+    description: 'Enable auto-redeem for resolved positions (performs the required contract approval for redemption). This is just the approval step (ERC1155/CTF redeem flow); explicit SDK method coming per feedback. Delegates to setup_trading_approvals which covers it.',
     inputSchema: { type: 'object', properties: {} }
   },
   {
@@ -1129,7 +1150,7 @@ const secureTools = [
   },
   {
     name: 'redeem_positions',
-    description: 'Redeem resolved positions (by marketId)',
+    description: 'Redeem resolved positions (by marketId or conditionId). Auto-redeem is enabled via contract approval (included in setup_trading_approvals; explicit SDK helper noted for future).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1186,7 +1207,7 @@ const secureTools = [
   },
   {
     name: 'prepare_redeem_positions',
-    description: 'Prepare redeem positions workflow (CTF)',
+    description: 'Prepare redeem positions workflow (CTF). Auto-redeem requires the redemption approval (see setup_trading_approvals which includes it).',
     inputSchema: { type: 'object', properties: {} }
   },
   {
@@ -1814,7 +1835,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'list_markets':
       return callPaginatedWithFormat(pub.listMarkets(args), F.formatMarket, name);
     case 'fetch_market':
-      return callWithFormat(() => pub.fetchMarket(args), F.formatMarket, name);
+      return callWithFormat(() => getMarket(args as any), F.formatMarket, name);
     case 'list_events':
       return callPaginatedWithFormat(pub.listEvents(args), F.formatEvent, name);
     case 'fetch_event':
@@ -3092,6 +3113,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { isError: true, content: [{ type: 'text' as const, text: `Error in setup_trading_approvals: ${error?.message || String(error)}` }] };
       }
     }
+    case 'enable_auto_redeem': {
+      try {
+        const h = await (await getSec()).setupTradingApprovals();
+        const card = await F.formatTransactionHandle(h);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ 'Auto-Redeem Enabled': true, ...card }, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2) }] };
+      } catch (error: any) {
+        return { isError: true, content: [{ type: 'text' as const, text: `Error in enable_auto_redeem: ${error?.message || String(error)}` }] };
+      }
+    }
     case 'split_position': {
       try {
         const h = await (await getSec()).splitPosition(args);
@@ -3174,7 +3204,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'fetch_tag':
       return callWithFormat(() => pub.fetchTag(args), F.formatTag, name);
     case 'fetch_related_tags':
-      return callWithFormat(() => pub.fetchRelatedTags(args), F.formatSimpleListItem, name);
+      return callWithFormat(() => pub.fetchRelatedTags(args), F.formatRelatedTag, name);
 
     // Comments
     case 'list_comments':

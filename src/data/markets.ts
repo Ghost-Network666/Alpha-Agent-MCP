@@ -22,9 +22,21 @@ export async function getFirstMarketsPage(params?: any) {
 }
 
 /**
- * Fetch single market by id, slug, or url.
+ * Fetch single market by id, slug, url, or tokenId (clobTokenId / yes/no tokenId).
+ * For tokenId we resolve via listMarkets clobTokenIds filter (supported by SDK),
+ * since direct fetchMarket({tokenId}) may not be in all SDK versions yet.
  */
-export async function getMarket(params: { id?: string; slug?: string; url?: string }): Promise<Market> {
+export async function getMarket(params: { id?: string; slug?: string; url?: string; tokenId?: string }): Promise<Market> {
+  if (params.tokenId) {
+    const paginator = client().listMarkets({ clobTokenIds: [params.tokenId], pageSize: 1 });
+    const page: any = await firstPage(paginator);
+    const items = page?.items || (Array.isArray(page) ? page : []);
+    const market = items[0];
+    if (!market) {
+      throw new Error(`No market found for tokenId ${params.tokenId}`);
+    }
+    return market as Market;
+  }
   return withErrorHandling(
     () => client().fetchMarket(params as any),
     'data.getMarket'

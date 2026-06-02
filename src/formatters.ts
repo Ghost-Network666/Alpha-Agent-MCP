@@ -30,6 +30,7 @@ import type {
   UserRewardsEarning,
   Tag,
   Series,
+  RelatedTag,
   NotificationsResponse,
   BuilderTrade,
   BuilderVolumeEntry,
@@ -590,15 +591,36 @@ export function formatPortfolioValue(value: Value[]): object {
 
 export function formatActivity(activity: Activity): object {
   const base: any = activity as any;
-  return omitUndefined({
+  const common: any = {
     'Type': base.type,
+    'Timestamp': formatDate(base.timestamp),
+    'Wallet': truncateAddress(base.wallet ?? base.proxyWallet),
+    'Transaction Hash': truncateAddress(base.transactionHash),
+  };
+  // Rebates / rewards / yield are simple amount + base (per SDK Activity types: MAKER_REBATE etc)
+  if (base.type === 'MAKER_REBATE' || base.type === 'REWARD' || base.type === 'REFERRAL_REWARD' || base.type === 'YIELD') {
+    return omitUndefined({
+      ...common,
+      'Amount': formatDecimal(base.amount),
+    });
+  }
+  // Position lifecycle (REDEEM, SPLIT, MERGE, CONVERSION) have title/condition + amount
+  if (base.type === 'REDEEM' || base.type === 'SPLIT' || base.type === 'MERGE' || base.type === 'CONVERSION') {
+    return omitUndefined({
+      ...common,
+      'Title': base.title ?? base.slug,
+      'Amount': formatDecimal(base.amount),
+      'Condition Id': base.conditionId,
+    });
+  }
+  // TRADE (and fallback)
+  return omitUndefined({
+    ...common,
     'Title': base.title ?? base.slug,
     'Side': formatSide(base.side),
     'Amount': formatDecimal(base.size ?? base.amount),
     'Price': formatPriceDisplay(base.price),
-    'Timestamp': formatDate(base.timestamp),
-    'Wallet': truncateAddress(base.wallet ?? base.proxyWallet),
-    'Transaction Hash': truncateAddress(base.transactionHash),
+    'Outcome': base.outcome,
   });
 }
 
@@ -823,6 +845,19 @@ export function formatSeries(series: Series): object {
     'Liquidity': formatDecimal(series.liquidity),
     'Active': series.active ? 'Yes' : 'No',
     'Closed': series.closed ? 'Yes' : 'No',
+  });
+}
+
+/**
+ * Formatter for RelatedTag (post SDK update: uses camelCase tagId/relatedTagId).
+ * Falls back to old snake/caps for compat during transition.
+ */
+export function formatRelatedTag(tag: RelatedTag | any): object {
+  return omitUndefined({
+    'Id': tag.id,
+    'Tag Id': tag.tagId ?? tag.tagID,
+    'Related Tag Id': tag.relatedTagId ?? tag.relatedTagID,
+    'Rank': tag.rank,
   });
 }
 

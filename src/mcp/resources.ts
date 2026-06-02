@@ -6,6 +6,7 @@ import {
   type ReconnectingSubscription,
 } from '../websocket/subscriptions.js';
 import * as F from '../formatters.js';
+import { getMarket } from '../data/markets.js';
 import { logWs } from '../utils/logger.js';
 
 export const RESOURCE_CAPABILITIES = {
@@ -348,9 +349,9 @@ export class PolymarketResourceManager {
           };
         }
 
-        // Default: market snapshot (we don't have direct tokenId -> market fetch easily,
-        // so fall back to order book + price context as a useful card)
-        const [book, price] = await Promise.all([
+        // Default: market snapshot - now use getMarket({tokenId}) for full metadata (via clobTokenIds resolution)
+        const [market, book, price] = await Promise.all([
+          getMarket({ tokenId }).catch(() => null),
           pub.fetchOrderBook({ tokenId }).catch(() => null),
           pub.fetchMidpoint({ tokenId }).catch(() => null),
         ]);
@@ -360,9 +361,10 @@ export class PolymarketResourceManager {
             mimeType: 'application/json',
             text: JSON.stringify({
               TokenId: tokenId,
+              Market: market ? F.formatMarket(market as any) : 'Unavailable',
               Book: book ? F.formatOrderBook(book) : 'Unavailable',
               Midpoint: price,
-              Note: 'Use polymarket://market/{tokenId}/book for live book. For full market metadata use the fetch_market tool with slug or id.',
+              Note: 'Full market metadata now resolved via fetch_market / getMarket by tokenId. Use polymarket://market/{tokenId}/book for live book only.',
             }, null, 2),
           }],
         };
