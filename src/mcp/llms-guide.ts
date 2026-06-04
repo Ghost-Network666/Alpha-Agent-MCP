@@ -12,7 +12,9 @@
 // This gives agents the "how to use the MCP without ever guessing" in official .MD style, using only native SDK explicit calls. The MCP "uses this [SDK README] for all" base instructions + MCP specifics.
 
 export const MCP_CATEGORIES = [
+  'Meta',       // Recipes, routing, SDK readme, cycle planner, categories
   'Intelligence', // Deterministic signals + alpha report (no LLM in MCP; host reasons)
+  'External',   // Non-CLOB reference data (crypto spot, weather)
   'Rewards',
   'Strategy',
   'Account',
@@ -21,7 +23,6 @@ export const MCP_CATEGORIES = [
   'Trading',
   'Analytics',
   'Weather',    // Free UK weather (multi-provider fallback APIs for forecasts/historical/current, native tools for agents + heartbeat)
-  'Meta',       // get_mcp_usage for MCP activities/usage tracking
   'Advanced'    // Low-level, security-sensitive, prepare workflows.
 ];
 

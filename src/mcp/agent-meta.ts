@@ -1,29 +1,33 @@
-/** Tier-1 default surface: daily-driver tools only. All 142 handlers remain via categories. */
+/** Tier-1 default surface: daily-driver tools only. Full handlers via categories (see TOOL_COUNT). */
 
 export const TIER1_CORE_TOOL_NAMES: readonly string[] = [
+  'get_agent_recipes',
+  'fetch_sdk_readme',
+  'run_agent_cycle',
   'list_tool_categories',
   'get_tools_by_category',
   'get_mcp_usage',
-  'get_agent_recipes',
   'search_tools',
   'load_agent_profile',
   'discover_topic',
-  'wait_seconds',
+  'generate_alpha_report',
   'get_strategies',
   'set_strategy',
   'update_strategy',
   'clear_strategy',
+  'wait_seconds',
   'get_balance_allowance',
   'list_positions',
   'fetch_market',
-  'suggest_qualified_size',
   'list_active_maker_reward_markets',
   'get_farmability',
+  'suggest_qualified_size',
   'place_limit_order',
   'cancel_order',
   'list_open_orders',
   'post_orders',
   'get_uk_weather_forecast',
+  'get_crypto_spot',
 ];
 
 /** One-call bundles: registers category tools for the session (no capability removed). */
@@ -34,7 +38,11 @@ export const AGENT_PROFILES: Record<string, { categories: string[]; description:
   },
   rewards: {
     description: 'Maker rewards scan, farmability, optimized place, full reward toolkit',
-    categories: ['Rewards', 'Trading', 'Strategy'],
+    categories: ['Intelligence', 'Rewards', 'Trading', 'Strategy'],
+  },
+  automation: {
+    description: 'Cycle planner + alpha report + intelligence signals',
+    categories: ['Meta', 'Intelligence', 'Strategy'],
   },
   trading: {
     description: 'Full trading + account positions + discovery',

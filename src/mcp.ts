@@ -52,7 +52,15 @@ import {
   computeBayesianPosterior,
   fetchFarmabilitySnapshot,
   buildAlphaReport,
+  fetchRewardCandidates,
 } from './intelligence/index.js';
+import { getToolsByCategory, ensureCategoryPrefix } from './mcp/category-match.js';
+import { compactTools } from './mcp/compact-tools.js';
+import { fetchLiveSdkReadme } from './mcp/sdk-readme.js';
+import { buildNeverGuessPrompt } from './mcp/never-guess.js';
+import { buildAgentCyclePlan } from './automation/agent-cycle.js';
+import { fetchCryptoSpotUsd } from './data/crypto.js';
+import { loadStrategyFile, saveStrategyFile } from './strategy/persist.js';
 
 // Mark as MCP server early so logger, env, and other modules can adapt (no stdout pollution, no process.exit on auth errors).
 process.env.MCP_MODE = '1';
@@ -70,6 +78,16 @@ process.env.MCP_SERVER = 'true';
 const strategyStore = new Map<string, any>(); // key (tokenId or ruleKey) -> arbitrary object the agent owns
 function getStrategyKey(tokenId: string, market?: string) {
   return market ? `${tokenId}:${market}` : tokenId;
+}
+
+async function persistStrategiesToDisk() {
+  try {
+    const obj: Record<string, unknown> = {};
+    for (const [k, v] of strategyStore.entries()) obj[k] = v;
+    await saveStrategyFile(obj);
+  } catch {
+    /* non-fatal — in-memory store still works */
+  }
 }
 
 // Lightweight in-MCP usage/activity tracking for operators and agents.
@@ -304,30 +322,6 @@ const TOOL_CATEGORIES: Record<string, string> = {
   // Core categories: Discovery, Rewards, Trading, Account, Strategy, Analytics, Utilities, Weather
 };
 
-// Helper to get tools filtered by category
-function getToolsByCategory(category: string) {
-  const catLower = category.toLowerCase();
-  return [...publicTools, ...secureTools].filter(t => {
-    const desc = t.description || '';
-    // Match by prefix tag [Trading] etc in description
-    if (desc.toLowerCase().startsWith(`[${catLower}]`)) return true;
-    // Match by keywords for untagged tools (or use [Category] prefix in desc for exact; Advanced uses keywords too)
-    if (catLower === 'rewards' && /reward|maker reward|scoring|farmability|active_maker/i.test(desc)) return true;
-    if (catLower === 'strategy' && /strategy|stop loss|take profit|sl\/tp/i.test(desc)) return true;
-    if (catLower === 'account' && /balance|allowance|portfolio|position|profile|notification|comment/i.test(desc)) return true;
-    if (catLower === 'trading' && /place|order|cancel|maker|post_order|prepare.*order|watch_order/i.test(desc)) return true;
-    if (catLower === 'discovery' && /discover_topic|list_market|fetch_market|search|list_tag|list_sport|list_team|fetch_tag|list_event|list_series|list_.*leaderboard|public_profile/i.test(desc)) return true;
-    if (catLower === 'meta' && /search_tools|load_agent_profile/i.test(desc)) return true;
-    if (catLower === 'advanced' && /security-sensitive|sign_|send_transaction|prepare_|deploy_|end_authentication|get_secure_client_info|advanced/i.test(desc)) return true;
-    if (catLower === 'meta' && /\[meta\]|meta|usage|track|discover|list_tool_category|get_tools_by_category/i.test(desc)) return true;
-    if ((catLower === 'data' || catLower === 'analytics') && /(list_|fetch_|search|price|spread|midpoint|book|volume|interest|holder|tag|series|builder|trader|profile|neg_risk|tick|execute|market_info|traded|related|live_volume|prices|spreads|midpoints|order_books)/i.test(desc)) return true;
-    if (catLower === 'weather' && /weather|uk_weather/i.test(desc)) return true;
-    if (catLower === 'intelligence' && /\[intelligence\]|alpha_report|market_signals|rank_market_opportunities/i.test(desc)) return true;
-    if (catLower === 'resources' && /resource|watch|heartbeat|scoring/i.test(desc)) return true;
-    return false;
-  });
-}
-
 function listAllCategories() {
   // Source of truth for categories is in llms-guide.ts (for the non-stale guide: SDK README first + MCP mappings).
   // This ensures the documented concepts in the MCP's llms guide stay in sync with runtime discovery.
@@ -388,10 +382,44 @@ const publicTools = [
       properties: {
         profile: {
           type: 'string',
-          enum: ['weather', 'rewards', 'trading', 'discovery', 'account', 'full'],
+          enum: ['weather', 'rewards', 'trading', 'discovery', 'account', 'full', 'automation'],
         },
       },
       required: ['profile'],
+    },
+  },
+  {
+    name: 'fetch_sdk_readme',
+    description: '[Meta] Live upstream TS SDK README (HTTP, cached). Use before guessing SDK method names.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'run_agent_cycle',
+    description: '[Meta] Deterministic automation plan: ordered tools/call steps for a goal. Host executes; no LLM in MCP.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'trading', 'discovery'] },
+        topic: { type: 'string' },
+        maxMinCostUsd: { type: 'number' },
+      },
+      required: ['goal'],
+    },
+  },
+  {
+    name: 'run_autonomous_trading_cycle',
+    description: '[Meta] Alias of run_agent_cycle — same deterministic step plan; host executes each tools/call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'trading', 'discovery'] },
+        topic: { type: 'string' },
+        maxMinCostUsd: { type: 'number' },
+      },
+      required: ['goal'],
     },
   },
   {
@@ -494,7 +522,22 @@ const publicTools = [
       required: ['q']
     }
   },
-  // === Weather (free UK-focused multi-provider APIs with auto-fallback for rate limits; native tools for agents + heartbeat enhancement)
+  // === Weather + external reference data
+  {
+    name: 'get_crypto_spot',
+    description: '[External] Public crypto USD spot (CoinGecko, cached). Reference for mispricing vs CLOB prices.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        symbols: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'CoinGecko ids e.g. bitcoin, ethereum',
+        },
+      },
+      required: ['symbols'],
+    },
+  },
   {
     name: 'get_uk_weather_forecast',
     description: '[Weather] Free UK weather forecast (Open-Meteo primary no-key + UK Met Office UKV 2km model; fallbacks to OpenWeatherMap/VisualCrossing/WeatherAPI if rate limited or error). Use for WEATHER category markets, mispricing vs prices, heartbeat signals. Cities: London, Manchester, etc or lat,lon.',
@@ -2009,6 +2052,13 @@ const secureTools = [
   }
 ];
 
+for (let i = 0; i < publicTools.length; i++) {
+  publicTools[i] = ensureCategoryPrefix(publicTools[i]);
+}
+for (let i = 0; i < secureTools.length; i++) {
+  secureTools[i] = ensureCategoryPrefix(secureTools[i]);
+}
+
 // === Tier-1 Core (~22 tools) — full SDK via load_agent_profile / get_tools_by_category ===
 const DEFAULT_CORE_TOOL_NAMES = new Set(TIER1_CORE_TOOL_NAMES);
 let currentlyExposedToolNames = new Set(DEFAULT_CORE_TOOL_NAMES);
@@ -2042,15 +2092,20 @@ const PROMPTS = [
     name: 'mcp_llms_full_guide',
     description: 'Returns complete guide: the official TS SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md — kept up-to-date by the maintainers) is the PRIMARY/canonical source of truth for all SDK coverage, APIs, client creation (createPublicClient/createSecureClient), decorators (extend(allActions)), methods (listMarkets, fetchMarket, placeLimitOrder etc.), parameters, errors, examples. This MCP adds only runtime-generated overlays/mappings (exact native tool + JSON call shape + "use explicit place_limit_order etc with your numbers from strategy/calc, never intent"). Includes full exhaustive SDK surface mappings + strategyStore + cards (PNL/sentiment/farmability) + resources + rate notes + public rules. Call SDK README first, then this (and structure prompt) for complete non-guessing experience. Always in sync (call-time from code + current SDK).',
     arguments: []
-  }
+  },
+  {
+    name: 'never_guess_contract',
+    description: 'Binding never-guess rules: startup order, live SDK readme, tier-1, resources, automation, strategy store. Call every session.',
+    arguments: [],
+  },
 ];
 
 // Register tool list (MCP discovery) - returns the current exposed set (~50 default).
 // Categories dynamically add to currentlyExposedToolNames so subsequent list calls see them.
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const allTools = [...publicTools, ...secureTools];
-  const exposed = allTools.filter(t => currentlyExposedToolNames.has(t.name));
-  return { tools: exposed };
+  const exposed = allTools.filter((t) => currentlyExposedToolNames.has(t.name));
+  return { tools: compactTools(exposed) };
 });
 
 // Execute tools — every handler returns JSON. Errors never throw.
@@ -2080,9 +2135,77 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }]
       };
 
+    case 'fetch_sdk_readme': {
+      try {
+        const live = await fetchLiveSdkReadme();
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: true,
+              installedVersion: live.installedVersion,
+              sourceUrl: live.sourceUrl,
+              fetchedAt: live.fetchedAt,
+              fromCache: live.fromCache,
+              canonicalUrl: live.canonicalUrl,
+              markdown: live.markdown,
+              agentDirective: 'Use this as canonical SDK coverage. For MCP tool names call get_agent_recipes.',
+            }, null, 2),
+          }],
+        };
+      } catch (e: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: false, error: e?.message || String(e), fallback: 'read_resource polymarket://mcp/llms.txt' }, null, 2),
+          }],
+        };
+      }
+    }
+
+    case 'run_autonomous_trading_cycle':
+    case 'run_agent_cycle': {
+      const strategies: Record<string, unknown> = {};
+      for (const s of strategyStore.values()) {
+        if (s && typeof s === 'object' && (s as any).tokenId) {
+          strategies[String((s as any).tokenId)] = s;
+        }
+      }
+      for (const [k, v] of strategyStore.entries()) strategies[k] = v;
+      const plan = buildAgentCyclePlan({
+        goal: args.goal,
+        topic: args.topic,
+        maxMinCostUsd: args.maxMinCostUsd,
+        strategies,
+      });
+      if (name === 'run_autonomous_trading_cycle') {
+        (plan as any).aliasNote = 'run_autonomous_trading_cycle delegates to run_agent_cycle (deterministic plan; host executes steps).';
+      }
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(plan, null, 2) }],
+      };
+    }
+
+    case 'get_crypto_spot': {
+      try {
+        const symbols = Array.isArray(args.symbols) ? args.symbols : ['bitcoin', 'ethereum'];
+        const spots = await fetchCryptoSpotUsd(symbols.map(String));
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: true, spots, note: 'Host compares vs fetch_midpoint / market cards for edge.' }, null, 2),
+          }],
+        };
+      } catch (e: any) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2) }],
+        };
+      }
+    }
+
     case 'get_tools_by_category': {
       const cat = args.category;
-      const filtered = getToolsByCategory(cat);
+      const filtered = getToolsByCategory([...publicTools, ...secureTools], cat);
       // Dynamically register: add these tools to the exposed set so they appear
       // in tools/list responses and are treated as first-class for the session.
       // Hosts/agents should re-invoke tools/list after this call to see the expanded surface.
@@ -2101,7 +2224,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             count: filtered.length,
             newlyRegistered,
             totalExposedNow: currentlyExposedToolNames.size,
-            tools: filtered.map(t => ({
+            tools: compactTools(filtered).map((t) => ({
               name: t.name,
               description: t.description,
               inputSchema: t.inputSchema,
@@ -2194,7 +2317,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       let newlyRegistered = 0;
       const perCategory: Record<string, number> = {};
       for (const cat of profile.categories) {
-        const filtered = getToolsByCategory(cat);
+        const filtered = getToolsByCategory([...publicTools, ...secureTools], cat);
         perCategory[cat] = filtered.length;
         for (const t of filtered) {
           if (!currentlyExposedToolNames.has(t.name)) {
@@ -2592,217 +2715,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // === New Maker Rewards Support Tools ===
     case 'list_active_maker_reward_markets': {
-      // PRIMARY tool for autonomous reward market selection. Ultra-tiny by design.
-      // Default: top 5 ranked only (max 8). If you ever see >5k chars, restart your MCP server process.
-      const maxResults = Math.min(Math.max(1, args.maxResults || 5), 20);  // raised cap for relaxed discovery
-      const maxMinSize = args.maxMinSize != null ? parseFloat(args.maxMinSize) : null;
-      const maxMinCostUsd = args.maxMinCostUsd != null ? parseFloat(args.maxMinCostUsd) : null;
-
-      let rewardItems: any[] = [];
+      const maxResults = Math.min(Math.max(1, args.maxResults || 5), 20);
+      const maxMinSize = args.maxMinSize != null ? parseFloat(args.maxMinSize) : undefined;
+      const maxMinCostUsd = args.maxMinCostUsd != null ? parseFloat(args.maxMinCostUsd) : undefined;
       try {
-        const protectedCall = await callWithRateLimitProtection(
-          () => pub.listCurrentRewards({ pageSize: 50 }),  // always fetch a healthy page to support relaxed filters / more programs
-          'listCurrentRewards (active reward markets)'
-        );
-        if (!protectedCall.ok) {
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify({
-              success: false, rateLimited: true, retryAfterMs: protectedCall.retryAfterMs,
-              message: protectedCall.message,
-              directive: "Platform is rate limiting. Slow down. Do not call list_active_maker_reward_markets more than once every 4-6 seconds. Use the previous ranked list you already received."
-            }) }]
-          };
+        const { candidates, note } = await fetchRewardCandidates(pub, {
+          maxResults,
+          maxMinSize,
+          maxMinCostUsd,
+        });
+        const formattedMarkets = candidates.map((r) => F.formatActiveRewardMarket(r));
+        const payload = {
+          success: true,
+          count: candidates.length,
+          filteredBy: {
+            ...(maxMinSize != null ? { maxMinSize } : {}),
+            ...(maxMinCostUsd != null ? { maxMinCostUsd } : {}),
+          },
+          note:
+            note ||
+            'Ranked best-first. Use maxMinCostUsd:4.5 for $5 cap. Then get_farmability on yes/noTokenId.',
+          markets: formattedMarkets,
+          agentDirective:
+            candidates.length > 0
+              ? 'Pick rank 1-3 tokenId. On place failure rotate — never retry same token.'
+              : 'No programs — use generate_alpha_report or discover_topic; wait_seconds before rescan.',
+        };
+        let json = JSON.stringify(payload, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 0);
+        if (json.length > 5500) {
+          json = JSON.stringify({ ...payload, markets: formattedMarkets.slice(0, 3), note: 'Truncated top 3.' }, null, 0);
         }
-        const paginator = protectedCall.data;
-        const page = await paginator.firstPage();
-        let items = (page?.items || []);
-
-        // Apply maxMinSize filter early if requested (critical for agents with small order size caps)
-        if (maxMinSize != null && !isNaN(maxMinSize)) {
-          items = items.filter((r: any) => {
-            const minSz = parseFloat(r.rewardsMinSize ?? r.rewards_min_size ?? '999');
-            return minSz <= maxMinSize;
-          });
-        }
-
-        rewardItems = items;  // consider full page after basic filter; final top-N after ranking below
+        return { content: [{ type: 'text' as const, text: json }] };
       } catch (e: any) {
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: "Failed to fetch current reward programs", detail: e?.message || String(e) }) }]
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2),
+          }],
         };
       }
-
-      if (!rewardItems.length) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            success: true,
-            count: 0,
-            message: "No active maker reward programs returned by listCurrentRewards (even after fetching 50 and applying any relaxed maxMin* filters you passed).",
-            markets: [],
-            note: "Maker reward campaigns are time-limited and not always active. Relaxed filters on this tool only filter existing programs; they cannot invent programs if upstream listCurrentRewards returns none.",
-            suggestions: [
-              "Call the raw 'list_current_rewards' tool directly to see current response.",
-              "Use list_markets({ rewardsMinSize: 1, closed: false, pageSize: 20 }) to discover markets that support/have had rewards (may not have live rate right now).",
-              "Cross-check https://polymarket.com/ or rewards dashboards for live campaigns.",
-              "Poll this tool periodically (with wait_seconds between calls)."
-            ],
-            directive: "No current maker-reward-eligible markets. Switch to general discovery (list_markets or search) or wait for new programs. Do not keep calling with same params expecting different results."
-          }) }]
-        };
-      }
-
-      // Batch-resolve market metadata (question, slug, tokens) using conditionIds filter — one call
-      const conditionIds = rewardItems.map((r: any) => r.conditionId).filter(Boolean);
-      let marketsByCondition: Record<string, any> = {};
-      if (conditionIds.length) {
-        try {
-          const protectedMkt = await callWithRateLimitProtection(
-            () => pub.listMarkets({ conditionIds, pageSize: conditionIds.length, closed: false }),
-            'listMarkets batch for reward enrichment'
-          );
-          if (protectedMkt.ok) {
-            const mktPage = await protectedMkt.data.firstPage();
-            for (const m of (mktPage?.items || [])) {
-              if (m.conditionId) marketsByCondition[m.conditionId] = m;
-            }
-          }
-        } catch (e) {
-          // Non-fatal
-        }
-      }
-
-      // Collect all Yes/No tokenIds for batch mid price fetch (critical for small-cap USD cost calc)
-      const allTokenIds: string[] = [];
-      Object.values(marketsByCondition).forEach((m: any) => {
-        const yes = m.outcomes?.yes?.tokenId || m.yesTokenId;
-        const no = m.outcomes?.no?.tokenId || m.noTokenId;
-        if (yes) allTokenIds.push(yes);
-        if (no) allTokenIds.push(no);
-      });
-
-      let midsByToken: Record<string, number> = {};
-      if (allTokenIds.length > 0) {
-        try {
-          const midRequest = [...new Set(allTokenIds)].map((tokenId) => ({ tokenId }));
-          const midRes = await callWithRateLimitProtection(
-            () => pub.fetchMidpoints(midRequest),
-            'fetchMidpoints for USD cost enrichment'
-          );
-          if (midRes.ok && midRes.data) {
-            midsByToken = Object.fromEntries(
-              Object.entries(midRes.data).map(([k, v]) => [k, parseFloat(String(v))])
-            );
-          }
-        } catch (e) {
-          // Non-fatal, costs will be missing
-        }
-      }
-
-      // Compute attractiveness score for ranking (prefer low barrier + decent rate).
-      // Note: maxMinSize / maxMinCostUsd filters are applied before final ranking.
-      function attractiveness(r: any): number {
-        const minSz = parseFloat(r.rewardsMinSize ?? r.rewards_min_size ?? '50');
-        const maxSp = Number(r.rewardsMaxSpread ?? r.rewards_max_spread ?? 0.05);
-        const rate = parseFloat(r.totalDailyRate ?? r.total_daily_rate ?? r.sponsoredDailyRate ?? r.nativeDailyRate ?? '0');
-        // Higher score = easier to qualify (low minSz) + better payout rate + not too loose spread
-        const ease = 100 / Math.max(1, minSz);
-        const rateScore = Math.min(100, rate / 2); // normalize rough
-        const spreadPenalty = Math.max(0.1, maxSp) * 50;
-        return (ease * 2) + rateScore - spreadPenalty;
-      }
-
-      const ranked = [...rewardItems]
-        .map((r: any) => {
-          const m = marketsByCondition[r.conditionId] || {};
-          const minSz = r.rewardsMinSize ?? r.rewards_min_size;
-          const maxSp = r.rewardsMaxSpread ?? r.rewards_max_spread;
-          const daily = r.totalDailyRate ?? r.total_daily_rate ?? r.sponsoredDailyRate ?? '0';
-          const assets = (r.rewardsConfig || []).map((c: any) => c.assetAddress).filter(Boolean);
-          const slug = m.slug || r.conditionId;
-          const marketLink = `https://polymarket.com/market/${slug}`;
-
-          // Extract Yes/No tokenIds robustly (guarantee exposure like other market formatters)
-          const yesTok = m.outcomes?.yes?.tokenId
-            ?? m.tokens?.find((t: any) => (t.outcome || t.side) === 'Yes')?.tokenId
-            ?? m.yesTokenId;
-          const noTok = m.outcomes?.no?.tokenId
-            ?? m.tokens?.find((t: any) => (t.outcome || t.side) === 'No')?.tokenId
-            ?? m.noTokenId;
-
-          const score = attractiveness(r);
-
-          // Pull tick size from the enriched market (very useful for price precision)
-          const minTickSize = m.minimumTickSize ?? m.trading?.minimumTickSize ?? m.tickSize ?? m.minTickSize ?? m.order_price_min_tick_size;
-
-          // Compute real USD cost to qualify (the key signal for $5-cap agents)
-          const yesMid = yesTok ? midsByToken[yesTok] : null;
-          const noMid = noTok ? midsByToken[noTok] : null;
-          const yesMinCostUsd = (yesMid && minSz) ? (parseFloat(minSz) * yesMid) : null;
-          const noMinCostUsd = (noMid && minSz) ? (parseFloat(minSz) * noMid) : null;
-          const cheapestCostUsd = Math.min(yesMinCostUsd || 999, noMinCostUsd || 999);
-
-          const entry: any = {
-            rank: 0, // filled after sort
-            question: m.question || `Market ${r.conditionId.slice(0, 10)}...`,
-            slug,
-            conditionId: r.conditionId,
-            yesTokenId: yesTok,
-            noTokenId: noTok,
-            minSize: minSz,
-            maxSpread: maxSp,
-            dailyRate: daily,
-            minTickSize: minTickSize ? Number(minTickSize) : undefined,
-            yesMid: yesMid ? Number(yesMid).toFixed(4) : undefined,
-            noMid: noMid ? Number(noMid).toFixed(4) : undefined,
-            yesMinCostUsd: yesMinCostUsd ? Number(yesMinCostUsd).toFixed(2) : undefined,
-            noMinCostUsd: noMinCostUsd ? Number(noMinCostUsd).toFixed(2) : undefined,
-            cheapestMinCostUsd: cheapestCostUsd < 999 ? Number(cheapestCostUsd).toFixed(2) : undefined,
-            volume: m.metrics?.volume ? Number(m.metrics.volume) : undefined,
-            liquidity: m.metrics?.liquidity ? Number(m.metrics.liquidity) : undefined,
-            payoutAssets: assets.length ? assets : undefined,
-            marketLink,
-            attractiveness: Number(score.toFixed(2)),
-            whyRecommended: minSz && parseFloat(minSz) <= 10 ? 'Low min size (easy to qualify)' : (daily && parseFloat(daily) > 50 ? 'High reward rate' : 'Active program')
-          };
-          return { entry, score, raw: r, market: m, cheapestCostUsd };
-        })
-        // Apply USD cost filter after enrichment (most important for small capital)
-        .filter((x: any) => {
-          if (maxMinCostUsd != null && !isNaN(maxMinCostUsd)) {
-            return x.cheapestCostUsd == null || x.cheapestCostUsd <= maxMinCostUsd;
-          }
-          return true;
-        })
-        .sort((a, b) => b.score - a.score)
-        .slice(0, maxResults)
-        .map((x, i) => { x.entry.rank = i + 1; return x.entry; });
-
-      const formattedMarkets = ranked.map((r: any) => F.formatActiveRewardMarket(r));
-      const payload = {
-        success: true,
-        count: ranked.length,
-        filteredBy: {
-          ...(maxMinSize != null ? { maxMinSize } : {}),
-          ...(maxMinCostUsd != null ? { maxMinCostUsd } : {})
-        },
-        note: "Ranked best-first (Reward Market Cards via formatters). Shows exact USD cost to qualify. Use maxMinCostUsd: 4.5 for strict $5 cap. Primary for autonomous discovery. Enhanced cards include links + notes.",
-        markets: formattedMarkets,
-        usage: "For $5 cap: list_active_maker_reward_markets({maxMinCostUsd: 4.5}). Only place on markets where your size meets minSize and cost under cap. Then get_farmability(yes/noTokenId) for health/sentiment/near-mid."
-      };
-
-      let json = JSON.stringify(payload, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 0);
-      // Hard safety: never let this tool exceed ~5k chars even in weird cases
-      if (json.length > 5500) {
-        const reduced = { ...payload, markets: ranked.slice(0, 3), note: "Truncated to top 3 due to size guard." };
-        json = JSON.stringify(reduced, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 0);
-      }
-
-      return {
-        content: [{
-          type: 'text' as const,
-          text: json
-        }]
-      };
     }
 
     case 'validate_for_maker_rewards': {
@@ -3388,12 +3339,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
       });
       strategyStore.set(key, strategy);
+      await persistStrategiesToDisk();
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             success: true,
-            message: "Strategy / rules / config stored (persistent for this session). Use for any filters or operating rules.",
+            message: "Strategy / rules / config stored (session + disk when logs/ writable). Use for any filters or operating rules.",
             key,
             strategy,
             directive: "Use get_strategies (no args) to load your full current rule set. This is how you evolve filters, farming rules, event prefs etc. without bloating the MCP."
@@ -3466,13 +3418,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
 
       strategyStore.set(key, updated);
+      await persistStrategiesToDisk();
 
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             success: true,
-            message: "Entry updated (partial; all custom rules/filters preserved and new ones merged).",
+            message: "Entry updated (partial; persisted to disk when logs/ writable).",
             key,
             strategy: updated,
             directive: "Use get_strategies (no args) to see your full current set of filters, farming rules, event prefs, etc. This mechanism keeps the entire MCP lightweight while giving you complete control over every operating rule."
@@ -3941,6 +3894,8 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
   let content = '';
   if (name === 'agent_routing') {
     content = buildAgentRoutingPrompt();
+  } else if (name === 'never_guess_contract') {
+    content = buildNeverGuessPrompt();
   } else if (name === 'reward_farming_best_practices') {
     content = `KEY INSIGHTS FROM X (current tactics for daily USDC LP maker rewards — incorporate directly):
 
@@ -4155,6 +4110,13 @@ server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
 });
 
 async function main() {
+  try {
+    const disk = await loadStrategyFile();
+    for (const [k, v] of Object.entries(disk)) strategyStore.set(k, v);
+  } catch {
+    /* optional disk restore */
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Startup message only on stderr — never pollute stdout

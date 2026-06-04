@@ -177,15 +177,25 @@ export async function discoverTopic(req: DiscoverTopicRequest): Promise<Discover
 /** Static recipes so agents never guess tool names/args for common flows. */
 export function getAgentRecipes(): Record<string, unknown> {
   return {
-    note: 'Tier-1 (~22 tools) is always in tools/list. Use load_agent_profile or get_tools_by_category for the rest (142 total). Trading: explicit price/size only.',
+    note: 'Tier-1 (~26 tools) compact in tools/list. Full ~152 handlers via categories. Never guess — use recipes + prompts.',
     startup: [
       'get_agent_recipes (this)',
+      'fetch_sdk_readme OR read_resource polymarket://sdk/readme',
+      'prompts/get never_guess_contract',
       'prompts/get agent_routing',
-      'prompts/get mcp_tool_structure_and_categories',
       'get_strategies',
-      'discover_topic OR list_active_maker_reward_markets',
-      'load_agent_profile({ profile: "weather" | "rewards" | "trading" }) when you need more than tier-1',
+      'run_agent_cycle({ goal }) — execute returned steps',
+      'generate_alpha_report OR discover_topic per goal',
     ],
+    automation: {
+      cycle: { tool: 'run_agent_cycle', arguments: { goal: 'rewards', maxMinCostUsd: 10 } },
+      note: 'run_autonomous_trading_cycle is NOT registered — use run_agent_cycle',
+    },
+    liveDocs: {
+      sdkReadme: { tool: 'fetch_sdk_readme', arguments: {} },
+      resource: 'polymarket://sdk/readme',
+      mcpGuide: 'polymarket://mcp/llms.txt',
+    },
     topics: {
       weather: {
         discover: { tool: 'discover_topic', arguments: { topic: 'weather', closed: false, pageSize: 15 } },

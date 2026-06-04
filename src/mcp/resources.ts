@@ -9,6 +9,7 @@ import * as F from '../formatters.js';
 import { getMarket } from '../data/markets.js';
 import { logWs } from '../utils/logger.js';
 import { buildMcpLlmsGuide } from './llms-guide.js';
+import { fetchLiveSdkReadme } from './sdk-readme.js';
 
 export const RESOURCE_CAPABILITIES = {
   subscribe: true,
@@ -84,7 +85,13 @@ export const STATIC_RESOURCES = [
   {
     uri: 'polymarket://mcp/llms.txt',
     name: 'MCP Full Usage Guide (SDK README + MCP mappings)',
-    description: 'Complete guide: first link the official TS SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md — kept up-to-date by the maintainers for all SDK coverage) as base agent instructions, then MCP-specific mappings (exact native tool calls, no guessing, strategyStore, cards, etc.). Call prompts/get "mcp_llms_full_guide" or read this resource. Always in sync with code + SDK.',
+    description: 'MCP overlay mappings (live). Pair with polymarket://sdk/readme for upstream SDK docs.',
+    mimeType: 'text/markdown',
+  },
+  {
+    uri: 'polymarket://sdk/readme',
+    name: 'Live TS SDK README (upstream)',
+    description: 'Fetched at read time from github.com/Polymarket/ts-sdk (cached ~1h). Canonical SDK instructions.',
     mimeType: 'text/markdown',
   },
 ];
@@ -148,6 +155,12 @@ export class ResourceManager {
       const orderId = parts[1];
       const subPath = parts[2]; // 'fill-status' or undefined
       return { type: 'order', tokenId: orderId, subPath }; // reuse tokenId field for orderId for simplicity
+    }
+    if (parts[0] === 'mcp') {
+      return { type: 'mcp', subPath: parts.slice(1).join('/') || 'llms.txt' };
+    }
+    if (parts[0] === 'sdk' && parts[1] === 'readme') {
+      return { type: 'sdk', subPath: 'readme' };
     }
     return null;
   }
@@ -340,16 +353,44 @@ export class ResourceManager {
         };
       }
 
+      case 'sdk': {
+        if (parsed.subPath === 'readme') {
+          try {
+            const live = await fetchLiveSdkReadme();
+            const header = `# Live SDK README (@polymarket/client@${live.installedVersion})\nSource: ${live.sourceUrl}\nFetched: ${live.fetchedAt}\nCanonical: ${live.canonicalUrl}\n\n`;
+            return {
+              contents: [{ uri, mimeType: 'text/markdown', text: header + live.markdown }],
+            };
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            const fallback = buildMcpLlmsGuide();
+            return {
+              contents: [{
+                uri,
+                mimeType: 'text/markdown',
+                text: `# SDK README fetch failed\n${msg}\n\n## MCP fallback guide\n\n${fallback}`,
+              }],
+            };
+          }
+        }
+        throw new Error(`Unknown sdk resource: ${uri}`);
+      }
+
       case 'mcp': {
         if (parsed.subPath === 'llms.txt' || parsed.subPath === 'usage.md') {
-          // Full dynamic guide: SDK README link first (https://github.com/Polymarket/ts-sdk/blob/main/README.md as primary agent instructions — kept up-to-date by maintainers) + MCP mappings (same builder as the prompt).
-          // Imported cleanly from sibling llms-guide.js (no cycle, always in sync with tools/prompts + SDK).
           const guide = buildMcpLlmsGuide();
+          let sdkBlock = '';
+          try {
+            const live = await fetchLiveSdkReadme();
+            sdkBlock = `\n\n---\n\n## Live SDK README (attached)\n@polymarket/client@${live.installedVersion} — ${live.sourceUrl}\n\n${live.markdown.slice(0, 120_000)}\n`;
+          } catch {
+            sdkBlock = '\n\n---\n\n(Live SDK README unavailable — use tools/call fetch_sdk_readme or resource polymarket://sdk/readme)\n';
+          }
           return {
             contents: [{
               uri,
               mimeType: 'text/markdown',
-              text: guide,
+              text: guide + sdkBlock,
             }],
           };
         }

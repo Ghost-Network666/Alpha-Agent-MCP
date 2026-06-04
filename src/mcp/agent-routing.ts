@@ -21,13 +21,15 @@ export function buildAgentRoutingPrompt(): string {
 - Obey every agentDirective in tool responses. Do NOT ask the human for options.
 
 ## Mandatory startup (every session)
-1. tools/call get_agent_recipes — copy-paste JSON shapes for weather/rewards/startup.
-2. prompts/get agent_routing (this document).
-3. prompts/get mcp_tool_structure_and_categories + mcp_llms_full_guide.
-4. tools/call get_strategies — load your full rule set (strategy store = your brain).
-5. tools/call get_mcp_usage — optional observability.
+1. tools/call get_agent_recipes
+2. tools/call fetch_sdk_readme OR read_resource polymarket://sdk/readme (live SDK docs)
+3. prompts/get never_guess_contract (binding rules)
+4. prompts/get agent_routing (this document)
+5. prompts/get mcp_tool_structure_and_categories + mcp_llms_full_guide
+6. tools/call get_strategies
+7. tools/call run_agent_cycle({ goal }) — execute returned steps in order
 
-## Exposure ladder (142 tools total, nothing removed)
+## Exposure ladder (~152 handlers, compact tools/list)
 | Step | Tool | Purpose |
 |------|------|---------|
 | Default | tools/list | Tier-1 only (~${TIER1_CORE_TOOL_NAMES.length} daily drivers) |
@@ -85,9 +87,13 @@ Subscribe MCP resources: polymarket://market/{tokenId}/book, polymarket://user/o
 ### Rate discipline
 wait_seconds between placements. Store requote policy in strategy store (maxRequoteRatePerSidePerSec, minRequoteIntervalMs) per reward_farming_best_practices.
 
-## What does NOT exist on this MCP
-- run_autonomous_trading_cycle — not registered; use the loop above with strategy store + tier-1 tools.
-- Trading by natural-language "intent" — rejected by design; use explicit numeric params.
+## Automation (registered)
+- run_agent_cycle — deterministic step plan (host executes; no server-side LLM loop)
+- generate_alpha_report — scan + rank + agentDirective
+
+## Aliases
+- run_autonomous_trading_cycle — same handler as run_agent_cycle (deterministic plan)
+- Trading by natural-language "intent" — use explicit numeric params
 
 ## Host reminder
 After load_agent_profile or get_tools_by_category, re-call tools/list so the client surface updates. Rebuild + restart MCP host after server updates (stale dist breaks category/discovery).
