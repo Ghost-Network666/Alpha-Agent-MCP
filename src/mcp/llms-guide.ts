@@ -54,14 +54,16 @@ Instead of duplicating SDK docs or using stale local MDs/llms.txt, this prompt +
 
 **Never use "intent" for pure trading** — call place tools directly with your sizes/params from strategy or calc. suggest_qualified_size / get_farmability are *advisory only* for reward qualification/sizing policy. For directional or any core trading: compute or load policy then pass concrete values to place_limit_order etc.
 
-## Core Tools (Always Available - No Bloat)
-From tools/list you get only:
-- list_tool_categories, get_tools_by_category, get_mcp_usage (MCP-internal activity/usage tracker — this is how activities and usage are tracked)
-- wait_seconds
-- get_strategies, set_strategy, update_strategy, clear_strategy
-- get_balance_allowance, list_active_maker_reward_markets, suggest_qualified_size
+## Core Tools (Tier-1 ~22 — always in tools/list)
+- Meta: get_agent_recipes, search_tools, load_agent_profile, list_tool_categories, get_tools_by_category, get_mcp_usage
+- Discovery: discover_topic, fetch_market
+- Strategy: get/set/update/clear_strategy, wait_seconds, suggest_qualified_size
+- Rewards: list_active_maker_reward_markets, get_farmability
+- Trading: place_limit_order, cancel_order, list_open_orders, post_orders
+- Account: get_balance_allowance, list_positions
+- Weather: get_uk_weather_forecast
 
-Full ~130+ capabilities via on-demand categories (prevents bloat, forces deliberate use). Advanced category for sensitive (sign/send/prepare/deploy).
+Full **142** tools via load_agent_profile({ profile: "weather"|"rewards"|"trading"|"full" }) or get_tools_by_category — nothing removed.
 
 ## Full Exhaustive Coverage of the Unified @polymarket/client TS SDK — Exact SDK Functions + MCP Native Mappings (per expert guidance)
 

@@ -41,6 +41,11 @@ import {
 import { createResourceManager, RESOURCE_CAPABILITIES } from './mcp/resources.js';
 import { callWithRateLimitProtection, sleep } from './utils/errors.js';
 import { logger } from './utils/logger.js';
+import {
+  AGENT_PROFILES,
+  searchToolDefinitions,
+  TIER1_CORE_TOOL_NAMES,
+} from './mcp/agent-meta.js';
 import { buildMcpLlmsGuide, MCP_CATEGORIES } from './mcp/llms-guide.js';
 
 // Mark as MCP server early so logger, env, and other modules can adapt (no stdout pollution, no process.exit on auth errors).
@@ -326,7 +331,8 @@ function getToolsByCategory(category: string) {
     if (catLower === 'strategy' && /strategy|stop loss|take profit|sl\/tp/i.test(desc)) return true;
     if (catLower === 'account' && /balance|allowance|portfolio|position|profile|notification|comment/i.test(desc)) return true;
     if (catLower === 'trading' && /place|order|cancel|maker|post_order|prepare.*order|watch_order/i.test(desc)) return true;
-    if (catLower === 'discovery' && /list_market|fetch_market|search|list_tag|list_sport|list_team|fetch_tag|list_event|list_series|list_.*leaderboard|public_profile/i.test(desc)) return true;
+    if (catLower === 'discovery' && /discover_topic|list_market|fetch_market|search|list_tag|list_sport|list_team|fetch_tag|list_event|list_series|list_.*leaderboard|public_profile/i.test(desc)) return true;
+    if (catLower === 'meta' && /search_tools|load_agent_profile/i.test(desc)) return true;
     if (catLower === 'advanced' && /security-sensitive|sign_|send_transaction|prepare_|deploy_|end_authentication|get_secure_client_info|advanced/i.test(desc)) return true;
     if (catLower === 'meta' && /\[meta\]|meta|usage|track|discover|list_tool_category|get_tools_by_category/i.test(desc)) return true;
     if ((catLower === 'data' || catLower === 'analytics') && /(list_|fetch_|search|price|spread|midpoint|book|volume|interest|holder|tag|series|builder|trader|profile|neg_risk|tick|execute|market_info|traded|related|live_volume|prices|spreads|midpoints|order_books)/i.test(desc)) return true;
@@ -348,7 +354,7 @@ const publicTools = [
   // === Category Discovery Tools (added to solve 100+ tool bloat) ===
   {
     name: 'list_tool_categories',
-    description: '[Meta] Lists the available tool categories. Default exposed set is ~50 core tools (Discovery, Search, Data, Order Book, Trading basics, Positions, Weather etc focused) to keep context reasonable while giving broad utility. Use this + get_tools_by_category("trading"|"weather"|"data"|"discovery"|"rewards"|"advanced"|...) to dynamically load/register additional tools for the session (they become visible in tools/list and callable). Includes Meta for get_mcp_usage (tracks activities/usage). The MCP does NOT guide your strategy — it only provides structured access + full SDK via categories. Categories: Rewards, Strategy, Account, Utilities, Discovery, Trading, Analytics/Data, Weather, Meta, Advanced.',
+    description: '[Meta] Lists tool categories. Default tools/list is tier-1 only (~22 daily-driver tools). Use load_agent_profile({ profile }) or get_tools_by_category to register more (142 total, zero removed). START: get_agent_recipes. Categories: Rewards, Strategy, Account, Utilities, Discovery, Trading, Analytics, Weather, Meta, Advanced.',
     inputSchema: { type: 'object', properties: {} }
   },
   {
@@ -374,6 +380,33 @@ const publicTools = [
     name: 'get_agent_recipes',
     description: '[Meta] START HERE when unsure which tool to call. Returns exact native tool names + JSON argument shapes for common flows (weather, sports, crypto, rewards, startup sequence). No guessing — copy the recipe objects directly into tools/call.',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'search_tools',
+    description: '[Meta] Find tools by keyword without loading full tools/list. detail: "name" (smallest), "summary" (default), "schema" (full inputSchema). Example: search_tools({ query: "order book", detail: "summary" }). Then tools/call by name. All 142 tools exist — use load_agent_profile or get_tools_by_category to register more.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'e.g. weather, cancel, portfolio, tag' },
+        detail: { type: 'string', enum: ['name', 'summary', 'schema'], description: 'Default summary' },
+        limit: { type: 'number', description: 'Max results, default 15' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'load_agent_profile',
+    description: '[Meta] One call registers a tool bundle for your session (progressive disclosure). Profiles: weather | rewards | trading | discovery | account | full. Re-call tools/list to see new tools. Does not remove any capability — only exposes more handlers. Example: load_agent_profile({ profile: "weather" }).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profile: {
+          type: 'string',
+          enum: ['weather', 'rewards', 'trading', 'discovery', 'account', 'full'],
+        },
+      },
+      required: ['profile'],
+    },
   },
   {
     name: 'discover_topic',
@@ -1915,72 +1948,8 @@ const secureTools = [
   }
 ];
 
-// === Minimal Core Tool Set (for agent efficiency) ===
-// ARCHITECTURE: All tools are available via categories.
-// Default: ~50 core tools (weather/trading focused).
-// On-demand: get_tools_by_category loads and registers full category tools dynamically.
-// This gives full SDK access without initial bloat.
-const DEFAULT_CORE_TOOL_NAMES = new Set([
-  'list_tool_categories',
-  'get_tools_by_category',
-  'get_mcp_usage',
-  'get_agent_recipes',
-  'discover_topic',
-  'wait_seconds',
-  'get_strategies',
-  'set_strategy',
-  'update_strategy',
-  'clear_strategy',
-  'suggest_qualified_size',
-  'compute_bayesian_update',
-  'get_balance_allowance',
-  'list_positions',
-  'list_closed_positions',
-  'fetch_portfolio_value',
-  'list_activity',
-  'list_account_trades',
-  'list_markets',
-  'fetch_market',
-  'search',
-  'list_events',
-  'fetch_event',
-  'list_tags',
-  'fetch_tag',
-  'list_sports',
-  'list_teams',
-  'list_series',
-  'fetch_series',
-  'fetch_prices',
-  'fetch_spreads',
-  'fetch_midpoints',
-  'fetch_order_books',
-  'fetch_event_tags',
-  'fetch_market_tags',
-  'fetch_neg_risk',
-  'fetch_tick_size',
-  'fetch_public_profile',
-  'fetch_order_book',
-  'fetch_price',
-  'fetch_midpoint',
-  'fetch_spread',
-  'fetch_price_history',
-  'fetch_last_trade_price',
-  'list_trades',
-  'estimate_market_price',
-  'get_uk_weather_forecast',
-  'get_uk_weather_historical',
-  'get_uk_weather_current',
-  'list_active_maker_reward_markets',
-  'get_farmability',
-  'place_limit_order',
-  'create_and_post_order',
-  'post_orders',
-  'cancel_order',
-  'cancel_orders',
-  'cancel_all',
-  'list_open_orders',
-  'fetch_order'
-]);
+// === Tier-1 Core (~22 tools) — full SDK via load_agent_profile / get_tools_by_category ===
+const DEFAULT_CORE_TOOL_NAMES = new Set(TIER1_CORE_TOOL_NAMES);
 let currentlyExposedToolNames = new Set(DEFAULT_CORE_TOOL_NAMES);
 
 // === MCP Prompts for Agent Structure (lightweight guidance without tool bloat or enforcement) ===
@@ -2105,9 +2074,87 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify(getAgentRecipes(), null, 2),
+          text: JSON.stringify(
+            {
+              ...getAgentRecipes(),
+              tier1Core: [...TIER1_CORE_TOOL_NAMES],
+              profiles: AGENT_PROFILES,
+              loadMore: 'load_agent_profile({ profile }) or get_tools_by_category({ category }) — all 142 tools remain callable',
+            },
+            null,
+            2
+          ),
         }],
       };
+
+    case 'search_tools': {
+      const allTools = [...publicTools, ...secureTools];
+      const detail = (args.detail as 'name' | 'summary' | 'schema') || 'summary';
+      const matches = searchToolDefinitions(allTools, String(args.query || ''), detail, Number(args.limit) || 15);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(
+            {
+              query: args.query,
+              detail,
+              count: matches.length,
+              matches,
+              agentDirective:
+                matches.length === 0
+                  ? 'Try load_agent_profile({ profile: "full" }) or list_tool_categories. Core daily tools are already in tools/list (~22).'
+                  : 'Call tools/call with the name + arguments from inputSchema (prompts/get mcp_tool_structure if unsure).',
+            },
+            null,
+            2
+          ),
+        }],
+      };
+    }
+
+    case 'load_agent_profile': {
+      const profileKey = String(args.profile || '').toLowerCase();
+      const profile = AGENT_PROFILES[profileKey];
+      if (!profile) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: `Unknown profile "${args.profile}". Use: ${Object.keys(AGENT_PROFILES).join(', ')}`,
+          }],
+        };
+      }
+      let newlyRegistered = 0;
+      const perCategory: Record<string, number> = {};
+      for (const cat of profile.categories) {
+        const filtered = getToolsByCategory(cat);
+        perCategory[cat] = filtered.length;
+        for (const t of filtered) {
+          if (!currentlyExposedToolNames.has(t.name)) {
+            currentlyExposedToolNames.add(t.name);
+            newlyRegistered++;
+          }
+        }
+      }
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(
+            {
+              profile: profileKey,
+              description: profile.description,
+              categoriesLoaded: profile.categories,
+              toolsPerCategory: perCategory,
+              newlyRegistered,
+              totalExposedNow: currentlyExposedToolNames.size,
+              agentDirective: 'Re-call tools/list to refresh the host tool surface. All handlers unchanged — only exposure grew.',
+            },
+            null,
+            2
+          ),
+        }],
+      };
+    }
 
     case 'discover_topic':
       return callWithFormat(
@@ -3966,7 +4013,7 @@ After that, follow the directives in this prompt, the other prompts, and every t
 
 The MCP uses categories + a ~50 core set (expanded on-demand) to stay manageable while giving YOU (the agent) full power over every rule and filter, with full SDK surface reachable.
 
-DEFAULT CORE (~50 tools, always listed, weather/trading/discovery/data focused to prevent bloat): includes list_tool_categories, get_tools_by_category, get_mcp_usage (tracks MCP activities/tool usage stats — answers "how do you track the activities? the usage?"), wait_seconds, get_strategies/set/update/clear_strategy, get_balance_allowance + positions/activity/portfolio, list_markets/fetch_market/search/list_events + tags/sports/teams/series/data fetches (prices/spreads/midpoints/order_books etc), orderbook/price tools, basic place_limit/create_and_post/cancels/list_open/fetch_order/watch, all 3 UK weather tools, list_active_maker_reward_markets + get_farmability, basic CTF approvals/split/merge/redeem, etc.
+DEFAULT CORE (~22 tier-1 tools): get_agent_recipes, search_tools, load_agent_profile, discover_topic, strategy store, fetch_market, rewards scan (list_active + get_farmability), minimal trading (place/cancel/list_open/post_orders), balance/positions, one UK forecast tool. Full SDK (~142): load_agent_profile({ profile: "weather"|"rewards"|"trading"|"full" }) or get_tools_by_category — zero capability removed.
 
 Call get_tools_by_category("trading" | "weather" | "data" | "discovery" | "rewards" | "advanced" | ...) to *dynamically register* more tools for the session — they are added to the exposed set, become visible on next tools/list, and are immediately callable by name. Re-query tools/list after category loads to see the full current surface. Load 'Advanced' only when you need low-level/signing/prepare (e.g. sign_message, send_transaction, prepare_*, api key mgmt). This keeps default surface reasonable (~50) and safe while ensuring 100% of SDK tools are available and callable via categories.
 
@@ -3987,12 +4034,9 @@ Call list_tool_categories then get_tools_by_category("Rewards" | "Strategy" | "D
 Use the reward_farming_best_practices prompt for the current X + MARKET FARMING tactics.
 Never ask the human for options — drive everything from your stored rules + tool directives + prompts.
 
-**Easy discovery (use these first):**
-1. get_agent_recipes — exact tool+args cheat sheet (weather, rewards, startup).
-2. discover_topic({ topic: "weather", closed: false }) — ONE call returns events + markets with TokenIds (replaces list_events+list_markets for topics).
-3. list_events / list_markets — power-user only; category/topic aliases still map to tagSlug/tagId.
+**Tier-1 (always in tools/list, ~22 tools):** get_agent_recipes → get_strategies → discover_topic OR list_active_maker_reward_markets → fetch_market → place_limit_order (explicit price/size). Use search_tools({ query: "..." }) to find any of 142 tools without reading full list. Use load_agent_profile({ profile: "weather"|"rewards"|"trading"|"full" }) to register more tools in one call.
 
-Weather trading loop: discover_topic → get_uk_weather_forecast → fetch_market({ tokenId }) → place_limit_order with explicit numbers.
+Weather: discover_topic({ topic: "weather" }) → load_agent_profile({ profile: "weather" }) if you need list_events/order book tools → get_uk_weather_forecast → fetch_market → trade.
 
 **Token/Market by clobTokenId (rewards, orders, etc.):** The SDK fetchMarket only supports id/slug/url. When you receive tokenIds (yesTokenId/noTokenId/clobTokenIds), use:
 - fetch_market({ "tokenId": "<the token>" })  → full market metadata (internally uses listMarkets({clobTokenIds: [...]}) + first result).

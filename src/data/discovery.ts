@@ -177,7 +177,13 @@ export async function discoverTopic(req: DiscoverTopicRequest): Promise<Discover
 /** Static recipes so agents never guess tool names/args for common flows. */
 export function getAgentRecipes(): Record<string, unknown> {
   return {
-    note: 'Copy these exact tools/call shapes. Trading always uses explicit price/size — never intent. Load prompts/get mcp_tool_structure_and_categories for full contract.',
+    note: 'Tier-1 (~22 tools) is always in tools/list. Use load_agent_profile or get_tools_by_category for the rest (142 total). Trading: explicit price/size only.',
+    startup: [
+      'get_agent_recipes (this)',
+      'get_strategies',
+      'discover_topic OR list_active_maker_reward_markets',
+      'load_agent_profile({ profile: "weather" | "rewards" | "trading" }) when you need more than tier-1',
+    ],
     topics: {
       weather: {
         discover: { tool: 'discover_topic', arguments: { topic: 'weather', closed: false, pageSize: 15 } },
@@ -196,13 +202,13 @@ export function getAgentRecipes(): Record<string, unknown> {
         place: { tool: 'place_optimized_reward_order', arguments: { tokenId: '<id>', price: 0.5, size: 10, side: 'BUY' } },
       },
     },
-    startup: [
-      'prompts/get mcp_tool_structure_and_categories',
-      'prompts/get mcp_llms_full_guide',
-      'get_strategies',
-      'discover_topic OR list_active_maker_reward_markets depending on strategy',
-    ],
-    loadMore: { tool: 'get_tools_by_category', arguments: { category: 'Trading' } },
+    profiles: {
+      weather: { tool: 'load_agent_profile', arguments: { profile: 'weather' } },
+      rewards: { tool: 'load_agent_profile', arguments: { profile: 'rewards' } },
+      trading: { tool: 'load_agent_profile', arguments: { profile: 'trading' } },
+      full: { tool: 'load_agent_profile', arguments: { profile: 'full' } },
+    },
+    findTool: { tool: 'search_tools', arguments: { query: '<keyword>', detail: 'summary' } },
     supportedTopics: Object.keys(CATEGORY_TAG_SLUG),
   };
 }
