@@ -1226,6 +1226,59 @@ export function formatActiveRewardMarket(entry: any): object {
   });
 }
 
+export function formatMarketSignals(data: {
+  tokenId: string;
+  farmability?: object;
+  bayesian?: { posterior: number; divergenceBps: number; actionHint: string; reasoning: string };
+}): object {
+  return omitUndefined({
+    'Token Id': data.tokenId,
+    Farmability: data.farmability,
+    'Bayesian Edge': data.bayesian
+      ? {
+          Posterior: data.bayesian.posterior,
+          'Divergence bps': data.bayesian.divergenceBps,
+          Hint: data.bayesian.actionHint,
+          Reasoning: data.bayesian.reasoning,
+        }
+      : 'No external signal provided (pass signal + optional prior/weight)',
+    Note: 'Deterministic MCP signals only. Host LLM interprets and updates strategy store.',
+  });
+}
+
+export function formatAlphaReport(report: {
+  goal: string;
+  candidateCount: number;
+  opportunities: Array<{
+    rank: number;
+    tokenId: string;
+    label: string;
+    compositeScore: number;
+    confidence: string;
+    recommendation: string;
+    nextTools: string[];
+  }>;
+  agentDirective: string;
+  nextTools: string[];
+  hostNote: string;
+}): object {
+  return omitUndefined({
+    Goal: report.goal,
+    'Candidates Scored': report.candidateCount,
+    'Top Opportunities': report.opportunities.map((o) => ({
+      Rank: o.rank,
+      Label: o.label,
+      'Token Id': o.tokenId,
+      Score: o.compositeScore,
+      Confidence: o.confidence,
+      Recommendation: o.recommendation,
+    })),
+    'Agent Directive': report.agentDirective,
+    'Suggested Next Tools': report.nextTools,
+    'Host Note': report.hostNote,
+  });
+}
+
 export function formatFarmability(data: any): object {
   // Enhanced card for get_farmability output: includes explicit health/sentiment/competition signals + score + rec.
   if (!data || data.success === false) return { 'Farmability': data?.error || 'Unavailable' };

@@ -50,7 +50,7 @@ export const AGENT_PROFILES: Record<string, { categories: string[]; description:
   },
   full: {
     description: 'All categories except Advanced (load Advanced separately when needed)',
-    categories: ['Rewards', 'Strategy', 'Account', 'Utilities', 'Discovery', 'Trading', 'Analytics', 'Weather'],
+    categories: ['Intelligence', 'Rewards', 'Strategy', 'Account', 'Utilities', 'Discovery', 'Trading', 'Analytics', 'Weather'],
   },
 };
 

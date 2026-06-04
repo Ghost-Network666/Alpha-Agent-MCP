@@ -12,6 +12,7 @@
 // This gives agents the "how to use the MCP without ever guessing" in official .MD style, using only native SDK explicit calls. The MCP "uses this [SDK README] for all" base instructions + MCP specifics.
 
 export const MCP_CATEGORIES = [
+  'Intelligence', // Deterministic signals + alpha report (no LLM in MCP; host reasons)
   'Rewards',
   'Strategy',
   'Account',
@@ -49,7 +50,7 @@ Instead of duplicating SDK docs or using stale local MDs/llms.txt, this prompt +
 2. prompts/get **agent_routing** — primary native routing contract (tier-1, profiles, goal flows).
 3. prompts/get mcp_llms_full_guide + mcp_tool_structure_and_categories.
 4. get_strategies() (no args).
-5. discover_topic({ topic }) OR list_active_maker_reward_markets per goal.
+5. discover_topic({ topic }) OR list_active_maker_reward_markets OR generate_alpha_report({ goal }) per objective.
 6. load_agent_profile / get_tools_by_category only when needed; re-call tools/list.
 7. Obey agentDirectives. set/update_strategy for all rules. wait_seconds for rate discipline.
 
@@ -59,6 +60,7 @@ Instead of duplicating SDK docs or using stale local MDs/llms.txt, this prompt +
 - Meta: get_agent_recipes, search_tools, load_agent_profile, list_tool_categories, get_tools_by_category, get_mcp_usage
 - Discovery: discover_topic, fetch_market
 - Strategy: get/set/update/clear_strategy, wait_seconds, suggest_qualified_size
+- Intelligence: generate_alpha_report, compute_market_signals, rank_market_opportunities (deterministic; host LLM reasons)
 - Rewards: list_active_maker_reward_markets, get_farmability
 - Trading: place_limit_order, cancel_order, list_open_orders, post_orders
 - Account: get_balance_allowance, list_positions

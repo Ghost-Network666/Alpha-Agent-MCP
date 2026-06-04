@@ -53,9 +53,17 @@ discover_topic({ topic: "weather", closed: false, pageSize: 15 })
 
 SDK mapping: topic/category "WEATHER" → tagSlug "weather" (events), tagId via fetchTag (markets). Prefer discover_topic over bare list_events/list_markets.
 
+### Structured alpha (deterministic — host LLM reasons, no model in MCP)
+get_strategies() first
+→ generate_alpha_report({ goal: "rewards"|"weather"|"mispricing"|"discovery", maxMinCostUsd?, topic? })
+→ obey agentDirective + nextTools in the report card
+→ update_strategy with your thesis, then explicit place_* with your numbers
+
+Optional drill-down: compute_market_signals({ tokenId, prior?, signal?, weight? }) or rank_market_opportunities({ goal, tokenIds? })
+
 ### Maker rewards
 get_strategies() first
-→ list_active_maker_reward_markets({ maxMinCostUsd: <from strategy> })
+→ list_active_maker_reward_markets({ maxMinCostUsd: <from strategy> }) OR generate_alpha_report({ goal: "rewards", maxMinCostUsd })
 → get_farmability({ tokenId: "<yesTokenId or noTokenId from list>" })
 → suggest_qualified_size({ tokenId, intent: "reward_farming" }) — advisory only
 → load_agent_profile({ profile: "rewards" }) if place_optimized_reward_order not in tools/list

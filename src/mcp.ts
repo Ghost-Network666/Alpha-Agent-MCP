@@ -48,6 +48,11 @@ import {
   TIER1_CORE_TOOL_NAMES,
 } from './mcp/agent-meta.js';
 import { buildMcpLlmsGuide, MCP_CATEGORIES } from './mcp/llms-guide.js';
+import {
+  computeBayesianPosterior,
+  fetchFarmabilitySnapshot,
+  buildAlphaReport,
+} from './intelligence/index.js';
 
 // Mark as MCP server early so logger, env, and other modules can adapt (no stdout pollution, no process.exit on auth errors).
 process.env.MCP_MODE = '1';
@@ -157,27 +162,6 @@ function calculateRecommendedSize(params: {
     size: Math.max(0.01, hardCap / Math.max(0.01, currentPrice)),
     reasoning: `Market/Taker intent: hard capped at $${hardCap}. Use highConfidenceEdge=true only for near-guaranteed edges.`,
     capped: true,
-  };
-}
-
-/**
- * Simple precision-weighted Bayesian update.
- * Matches the logic used in external mispricing scanners.
- * posterior = (1 - weight) * prior + weight * signal
- */
-function computeBayesianPosterior(params: {
-  prior: number;      // Platform price (0-1)
-  signal: number;     // External signal, e.g. Kalshi price or Claude prob (0-1)
-  weight: number;     // 0 to 1, how much to trust the signal
-}): { posterior: number; divergence: number; reasoning: string } {
-  const { prior, signal, weight = 0.5 } = params;
-  const w = Math.max(0, Math.min(1, weight));
-  const posterior = (1 - w) * prior + w * signal;
-  const divergence = Math.abs(posterior - prior);
-  return {
-    posterior: Number(posterior.toFixed(4)),
-    divergence: Number(divergence.toFixed(4)),
-    reasoning: `Bayesian update with weight=${w}. Divergence from prior: ${(divergence * 100).toFixed(1)}pp`,
   };
 }
 
@@ -338,6 +322,7 @@ function getToolsByCategory(category: string) {
     if (catLower === 'meta' && /\[meta\]|meta|usage|track|discover|list_tool_category|get_tools_by_category/i.test(desc)) return true;
     if ((catLower === 'data' || catLower === 'analytics') && /(list_|fetch_|search|price|spread|midpoint|book|volume|interest|holder|tag|series|builder|trader|profile|neg_risk|tick|execute|market_info|traded|related|live_volume|prices|spreads|midpoints|order_books)/i.test(desc)) return true;
     if (catLower === 'weather' && /weather|uk_weather/i.test(desc)) return true;
+    if (catLower === 'intelligence' && /\[intelligence\]|alpha_report|market_signals|rank_market_opportunities/i.test(desc)) return true;
     if (catLower === 'resources' && /resource|watch|heartbeat|scoring/i.test(desc)) return true;
     return false;
   });
@@ -1814,6 +1799,81 @@ const secureTools = [
       required: ['tokenId']
     }
   },
+  {
+    name: 'compute_market_signals',
+    description: '[Intelligence] Deterministic signal bundle for one tokenId: farmability snapshot + optional Bayesian edge when prior/signal/weight provided. No LLM in MCP — your host model interprets. Example: compute_market_signals({ tokenId, prior: 0.42, signal: 0.55, weight: 0.4 }).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string' },
+        prior: { type: 'number', description: 'Platform price 0-1 (defaults to farmability mid if omitted)' },
+        signal: { type: 'number', description: 'External estimate 0-1 from host research' },
+        weight: { type: 'number', description: 'Trust in signal 0-1 (typical 0.3-0.6)' },
+      },
+      required: ['tokenId'],
+    },
+  },
+  {
+    name: 'rank_market_opportunities',
+    description: '[Intelligence] Rank opportunities by composite score (rewards scan and/or tokenIds + optional external signals). Returns structured ranks — host LLM decides trades. goals: rewards uses internal reward scan; pass tokenIds for mispricing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'discovery'] },
+        topic: { type: 'string', description: 'For weather/discovery goal' },
+        tokenIds: { type: 'array', items: { type: 'string' } },
+        maxMinCostUsd: { type: 'number' },
+        externalSignals: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              tokenId: { type: 'string' },
+              prior: { type: 'number' },
+              signal: { type: 'number' },
+              weight: { type: 'number' },
+              label: { type: 'string' },
+            },
+            required: ['tokenId', 'signal'],
+          },
+        },
+        maxResults: { type: 'number', description: 'Default 5, max 10' },
+        enrichFarmability: { type: 'boolean', description: 'Fetch live book signals (default true, capped at 5 tokens)' },
+      },
+      required: ['goal'],
+    },
+  },
+  {
+    name: 'generate_alpha_report',
+    description: '[Intelligence] PRIMARY structured alpha report (deterministic, no LLM). One call: scan + rank + agentDirective + nextTools for rewards/weather/discovery/mispricing. Host LLM reads JSON then update_strategy + explicit place_* . Example: generate_alpha_report({ goal: "rewards", maxMinCostUsd: 4.5 }).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'discovery'] },
+        topic: { type: 'string', description: 'weather, sports, crypto, etc. for discovery/weather goals' },
+        maxMinCostUsd: { type: 'number' },
+        maxMinSize: { type: 'number' },
+        tokenIds: { type: 'array', items: { type: 'string' } },
+        externalSignals: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              tokenId: { type: 'string' },
+              prior: { type: 'number' },
+              signal: { type: 'number' },
+              weight: { type: 'number' },
+              label: { type: 'string' },
+            },
+            required: ['tokenId', 'signal'],
+          },
+        },
+        maxCandidates: { type: 'number', description: 'Default 6, max 10' },
+        enrichFarmability: { type: 'boolean' },
+      },
+      required: ['goal'],
+    },
+  },
 
   // === Strategy & SL/TP Storage (huge advantage for autonomous agents) ===
   // Agents can store full trading plans (entry, TP, SL, size, notes) server-side in the MCP.
@@ -2623,12 +2683,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       let midsByToken: Record<string, number> = {};
       if (allTokenIds.length > 0) {
         try {
+          const midRequest = [...new Set(allTokenIds)].map((tokenId) => ({ tokenId }));
           const midRes = await callWithRateLimitProtection(
-            () => pub.fetchMidpoints({ tokenIds: [...new Set(allTokenIds)] }),
+            () => pub.fetchMidpoints(midRequest),
             'fetchMidpoints for USD cost enrichment'
           );
           if (midRes.ok && midRes.data) {
-            midsByToken = midRes.data; // { tokenId: midPrice }
+            midsByToken = Object.fromEntries(
+              Object.entries(midRes.data).map(([k, v]) => [k, parseFloat(String(v))])
+            );
           }
         } catch (e) {
           // Non-fatal, costs will be missing
@@ -3216,11 +3279,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         weight: args.weight,
       });
 
-      const divergenceBps = result.divergence * 10000;
-      let actionHint = "No clear edge.";
-      if (result.divergence >= 0.08) actionHint = "Strong edge — consider position.";
-      else if (result.divergence >= 0.05) actionHint = "Moderate edge — investigate further.";
-
       return {
         content: [{
           type: 'text' as const,
@@ -3228,8 +3286,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             success: true,
             posterior: result.posterior,
             divergenceFromPrior: result.divergence,
-            divergenceBps: Number(divergenceBps.toFixed(0)),
-            actionHint,
+            divergenceBps: result.divergenceBps,
+            actionHint: result.actionHint,
             reasoning: result.reasoning,
           }, null, 2)
         }]
@@ -3238,91 +3296,70 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'get_farmability': {
       const tokenId = args.tokenId;
+      const snap = await fetchFarmabilitySnapshot(pub, tokenId);
+      const farmCard = F.formatFarmability({
+        ...snap,
+        notes:
+          snap.notes +
+          ' Quote near midpoint (suggestedNearMidBuy/Sell). Use with suggest_qualified_size + list_active_maker_reward_markets.',
+      });
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(farmCard, null, 2)
+        }]
+      };
+    }
 
-      try {
-        const [book, rewards, spreads] = await Promise.all([
-          pub.fetchOrderBook({ tokenId }).catch(() => null),
-          pub.listMarketRewards({ conditionId: tokenId }).catch(() => null),
-          pub.fetchSpreads({ tokenIds: [tokenId] }).catch(() => null),
-        ]);
-
-        const program = rewards?.items?.[0];
-        const minSize = program ? parseFloat(program.rewardsMinSize || '0') : 0;
-        const maxSpread = program ? parseFloat(program.rewardsMaxSpread || '0') : 0;
-
-        const bestBid = book?.bids?.[0]?.price ? parseFloat(book.bids[0].price) : null;
-        const bestAsk = book?.asks?.[0]?.price ? parseFloat(book.asks[0].price) : null;
-        const mid = (bestBid && bestAsk) ? (bestBid + bestAsk) / 2 : null;
-        const currentSpread = (bestBid && bestAsk) ? (bestAsk - bestBid) : null;
-
-        // Use SDK fetchSpreads for more accurate current spread vs reward max
-        const spreadData = spreads && spreads[tokenId] ? spreads[tokenId] : null;
-        const accurateCurrentSpread = spreadData ? parseFloat(spreadData.spread || currentSpread || 0) : currentSpread;
-        const spreadVsAllowed = (accurateCurrentSpread && maxSpread) ? (accurateCurrentSpread / maxSpread) : null;
-
-        const costToQualify = (minSize && mid) ? minSize * mid : null;
-
-        // Proxy for sufficient volume/active flow: if book has reasonable depth on sides (SDK fetchOrderBook)
-        const bidDepth = book?.bids?.slice(0, 3).reduce((sum, b) => sum + parseFloat(b.size || 0), 0) || 0;
-        const askDepth = book?.asks?.slice(0, 3).reduce((sum, a) => sum + parseFloat(a.size || 0), 0) || 0;
-
-        // X Key Insights integration (SDK-native only, advisory): "Quote near the midpoint for higher reward weighting"
-        // + "sticky (auto-repegging post-only)" edge via postOnly GTC + reprice. Low-competition proxy from depth.
-        let suggestedNearMidBuy: number | undefined;
-        let suggestedNearMidSell: number | undefined;
-        if (mid != null) {
-          suggestedNearMidBuy = Number(Math.max(0.001, mid - 0.0008).toFixed(4));
-          suggestedNearMidSell = Number(Math.min(0.999, mid + 0.0008).toFixed(4));
-        }
-        const totalDepth = bidDepth + askDepth;
-        const depthImbalance = totalDepth > 0 ? Math.abs(bidDepth - askDepth) / totalDepth : 1;
-        const competitionSignal = totalDepth < 300 ? 'thin-book (verify flow; potential low-comp but check activity)' :
-          (totalDepth > 8000 ? 'deep-book (high competition likely; harder for sticky edge)' :
-           (depthImbalance < 0.5 ? 'balanced-moderate depth (favorable for active sticky quoting)' : 'imbalanced depth (adverse selection risk higher)'));
-
-        // Enhanced scoring per farming requirements (volume/liquidity via book depth proxy, tight spread, active flow via spread tightness)
-        let farmabilityScore = 0;
-        if (minSize > 0 && mid) farmabilityScore += 25; // reward eligible
-        if (spreadVsAllowed && spreadVsAllowed < 0.7) farmabilityScore += 35; // tight spread vs allowed (avoid wide)
-        if (accurateCurrentSpread && accurateCurrentSpread < 0.015) farmabilityScore += 20; // very tight current spread
-        if (costToQualify && costToQualify < 8) farmabilityScore += 15; // low inventory risk for small cap
-        if (totalDepth > 1000) farmabilityScore += 5; // active order flow proxy
-        if (suggestedNearMidBuy && accurateCurrentSpread && accurateCurrentSpread < 0.01) farmabilityScore += 5; // near-mid possible within tight spread (higher weighting)
-
-        const recommendation = farmabilityScore > 75 ? "Excellent for maker farming - tight spread, low cost, good eligibility, near-mid quoting feasible" :
-                              farmabilityScore > 55 ? "Good candidate - monitor for active flow and reprice as needed; use near-mid quotes" :
-                              farmabilityScore > 35 ? "Marginal - check for wide spreads or low activity; consider smaller test size or different market" :
-                              "Poor right now - wide spread vs allowed, high cost, or low eligibility. Look for better opportunities per exit rules.";
-
-        const farmCard = F.formatFarmability({
-          success: true,
-          tokenId,
-          rewardsMinSize: minSize || undefined,
-          rewardsMaxSpread: maxSpread || undefined,
-          currentMid: mid ? Number(mid.toFixed(4)) : undefined,
-          currentSpread: accurateCurrentSpread ? Number(accurateCurrentSpread.toFixed(4)) : undefined,
-          spreadVsMaxAllowed: spreadVsAllowed ? Number(spreadVsAllowed.toFixed(2)) : undefined,
-          costToQualifyUsd: costToQualify ? Number(costToQualify.toFixed(2)) : undefined,
-          approximateBookDepth: Number(totalDepth.toFixed(0)),
-          suggestedNearMidBuy: suggestedNearMidBuy,
-          suggestedNearMidSell: suggestedNearMidSell,
-          competitionSignal: competitionSignal,
-          farmabilityScore: Math.min(100, farmabilityScore),
-          recommendation,
-          notes: "SDK-native only (fetchOrderBook + listMarketRewards + fetchSpreads). Quote near midpoint (use suggestedNearMidBuy/Sell) for higher reward weighting. Both-sides (yes+no) for 2x when possible. Use place_maker_reward_order (forces postOnly GTC) + active reprice/monitor for 'sticky' major edge. Thin/moderate depth = potential low-competition; avoid high adverse selection. Exit on spread collapse, low activity, or better low-comp opp. Use with suggest_qualified_size + list_active_maker_reward_markets."
+    case 'compute_market_signals': {
+      const tokenId = args.tokenId;
+      const snap = await fetchFarmabilitySnapshot(pub, tokenId);
+      let bayesian;
+      if (args.signal != null && !Number.isNaN(Number(args.signal))) {
+        const prior = args.prior != null ? Number(args.prior) : (snap.currentMid ?? 0.5);
+        bayesian = computeBayesianPosterior({
+          prior,
+          signal: Number(args.signal),
+          weight: args.weight != null ? Number(args.weight) : 0.4,
         });
+      }
+      const card = F.formatMarketSignals({
+        tokenId,
+        farmability: F.formatFarmability(snap),
+        bayesian,
+      });
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ success: snap.success, ...card }, null, 2) }],
+      };
+    }
+
+    case 'rank_market_opportunities':
+    case 'generate_alpha_report': {
+      try {
+        const report = await buildAlphaReport(pub, {
+          goal: args.goal,
+          topic: args.topic,
+          maxMinCostUsd: args.maxMinCostUsd,
+          maxMinSize: args.maxMinSize,
+          tokenIds: args.tokenIds,
+          externalSignals: args.externalSignals,
+          maxCandidates: args.maxCandidates ?? args.maxResults,
+          enrichFarmability: args.enrichFarmability,
+        });
+        const formatted = F.formatAlphaReport(report);
+        const payload =
+          name === 'generate_alpha_report'
+            ? { success: true, ...report, card: formatted }
+            : { success: true, goal: report.goal, opportunities: report.opportunities, card: formatted };
         return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify(farmCard, null, 2)
-          }]
+          content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
         };
       } catch (e: any) {
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2)
-          }]
+            text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2),
+          }],
         };
       }
     }

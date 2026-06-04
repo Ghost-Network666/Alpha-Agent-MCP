@@ -199,9 +199,15 @@ export function getAgentRecipes(): Record<string, unknown> {
         discover: { tool: 'discover_topic', arguments: { topic: 'crypto', closed: false } },
       },
       rewards: {
+        alpha: { tool: 'generate_alpha_report', arguments: { goal: 'rewards', maxMinCostUsd: 10 } },
         scan: { tool: 'list_active_maker_reward_markets', arguments: { maxMinCostUsd: 10 } },
         check: { tool: 'get_farmability', arguments: { tokenId: '<from scan yesTokenId or noTokenId>' } },
         place: { tool: 'place_optimized_reward_order', arguments: { tokenId: '<id>', price: 0.5, size: 10, side: 'BUY' } },
+      },
+      intelligence: {
+        report: { tool: 'generate_alpha_report', arguments: { goal: 'rewards', maxMinCostUsd: 4.5 } },
+        signals: { tool: 'compute_market_signals', arguments: { tokenId: '<tokenId>', signal: 0.55, weight: 0.4 } },
+        rank: { tool: 'rank_market_opportunities', arguments: { goal: 'rewards', maxMinCostUsd: 5 } },
       },
     },
     profiles: {
