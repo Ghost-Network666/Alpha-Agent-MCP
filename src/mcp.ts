@@ -473,13 +473,13 @@ const publicTools = [
   },
   {
     name: 'discover_topic',
-    description: '[Discovery] EASIEST native discovery: events + markets for a topic. Uses static Gamma tagId registry (100 slugs) when known, else tagSlug + fetchTag. Topics: weather, sports, crypto, politics, or any slug from mcp_doctor gammaTagCount / get_agent_recipes. Example: discover_topic({ topic: "openai", closed: false }).',
+    description: '[Discovery] EASIEST native discovery: events + markets for a topic. Static Gamma registry (~190 slugs) + aliases (bitcoin, nfl, uk, ai, macro, nft, …) → fast tagId; else tagSlug + fetchTag. Topic = alias or slug — not free-text sentences. See get_agent_recipes.supportedTopicAliases. Example: discover_topic({ topic: "bitcoin", closed: false }).',
     inputSchema: {
       type: 'object',
       properties: {
         topic: {
           type: 'string',
-          description: 'weather | sports | crypto | politics | climate | science | entertainment (any case, or WEATHER etc.)',
+          description: 'Alias or slug: bitcoin, nfl, nba, crypto, politics, sports, weather, uk, ai, trump, ethereum, openai, macro, nft, … — see get_agent_recipes.supportedTopicAliases',
         },
         pageSize: { type: 'number', description: 'Per side, max 25, default 12' },
         closed: { type: 'boolean', description: 'false = open only (default)' },

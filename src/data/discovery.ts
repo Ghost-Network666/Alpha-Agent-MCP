@@ -4,28 +4,13 @@ import { KNOWN_AGENT_GOTCHAS } from '../mcp/agent-gotchas.js';
 import { INTENT_REGISTRY } from '../mcp/intent-routing.js';
 import { firstPage } from '../utils/pagination.js';
 import { GAMMA_TAG_BY_SLUG, gammaTagId } from './gamma-tag-registry.js';
+import {
+  CATEGORY_TAG_SLUG,
+  TOPIC_ALIASES,
+  listDiscoverTopicHints,
+} from './topic-aliases.js';
 
-/** Ergonomic category labels agents use → platform tag slugs (SDK listEvents tagSlug / fetchTag for listMarkets tagId). */
-export const CATEGORY_TAG_SLUG: Record<string, string> = {
-  WEATHER: 'weather',
-  CLIMATE: 'climate',
-  SPORTS: 'sports',
-  CRYPTO: 'crypto',
-  POLITICS: 'politics',
-  SCIENCE: 'science',
-  ENTERTAINMENT: 'entertainment',
-};
-
-const TOPIC_ALIASES: Record<string, string> = {
-  ...CATEGORY_TAG_SLUG,
-  weather: 'weather',
-  climate: 'climate',
-  sports: 'sports',
-  crypto: 'crypto',
-  politics: 'politics',
-  science: 'science',
-  entertainment: 'entertainment',
-};
+export { CATEGORY_TAG_SLUG, listDiscoverTopicHints };
 
 const tagIdBySlugCache = new Map<string, number>();
 
@@ -165,7 +150,7 @@ export async function discoverTopic(req: DiscoverTopicRequest): Promise<Discover
   const tagSlug = resolveTopicSlug(req.topic);
   if (!tagSlug) {
     throw new Error(
-      `Unknown topic "${req.topic}". Use: weather, climate, sports, crypto, politics, science, entertainment (any case).`
+      `Unknown topic "${req.topic}". Use a category alias (weather, sports, crypto, politics, nfl, bitcoin, uk, ai, macro, nft, …) or a Gamma tag slug from get_agent_recipes.supportedTopicAliases / mcp_doctor gammaTagCount.`
     );
   }
 
@@ -216,13 +201,20 @@ export function getAgentRecipes(): Record<string, unknown> {
     note: 'Tier-1 compact in tools/list. Full ~145 handlers via categories. Routing always on. Health: mcp_doctor or npm run doctor.',
     gammaTags: {
       count: listGammaTagSlugs().length,
-      hint: 'discover_topic({ topic: "<slug>" }) uses static tagId when slug is in registry; routing.tagRouting on every tool response',
-      examples: [
-        { topic: 'openai', tagSlug: 'openai', tagId: gammaTagId('openai') },
-        { topic: 'claude', tagSlug: 'claude', tagId: gammaTagId('claude') },
-        { topic: 'crypto', tagSlug: 'crypto', note: 'alias → slug; tagId via fetchTag if not in registry' },
-      ].filter((e) => e.tagId != null || 'note' in e),
+      hint: 'discover_topic({ topic }) — alias → slug → registry tagId (fast) or sdk_fetchTag',
+      registryFastPath: ['bitcoin', 'nfl', 'crypto', 'politics', 'sports', 'weather', 'uk', 'ai', 'ethereum', 'nba', 'trump', 'macro', 'nft'],
+      examples: ['bitcoin', 'nfl', 'openai', 'uk', 'weather'].map((topic) => {
+        const tagSlug = resolveTopicSlug(topic) ?? topic;
+        const tagId = gammaTagId(tagSlug);
+        return {
+          topic,
+          tagSlug,
+          tagId,
+          tagIdSource: tagId != null ? 'registry' : 'sdk_fetchTag',
+        };
+      }),
     },
+    supportedTopicAliases: listDiscoverTopicHints(),
     knownGotchas: KNOWN_AGENT_GOTCHAS,
     intentRouting: {
       tool: 'route_agent_intent',
@@ -264,6 +256,18 @@ export function getAgentRecipes(): Record<string, unknown> {
       crypto: {
         discover: { tool: 'discover_topic', arguments: { topic: 'crypto', closed: false } },
       },
+      bitcoin: {
+        discover: { tool: 'discover_topic', arguments: { topic: 'bitcoin', closed: false } },
+      },
+      nfl: {
+        discover: { tool: 'discover_topic', arguments: { topic: 'nfl', closed: false } },
+      },
+      uk: {
+        discover: { tool: 'discover_topic', arguments: { topic: 'uk', closed: false } },
+      },
+      ai: {
+        discover: { tool: 'discover_topic', arguments: { topic: 'ai', closed: false } },
+      },
       politics: {
         alpha: {
           tool: 'alpha_report',
@@ -290,7 +294,7 @@ export function getAgentRecipes(): Record<string, unknown> {
       full: { tool: 'load_agent_profile', arguments: { profile: 'full' } },
     },
     findTool: { tool: 'search_tools', arguments: { query: '<keyword>', detail: 'summary' } },
-    supportedTopics: Object.keys(CATEGORY_TAG_SLUG),
+    supportedTopics: listDiscoverTopicHints(),
     placeLimitOrder: {
       tool: 'place_limit_order',
       note: 'SDK PrepareLimitOrderRequest: tokenId, price, size, side, postOnly?, expiration? only — do NOT pass orderType',
