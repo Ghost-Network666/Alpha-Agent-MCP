@@ -1,3 +1,5 @@
-## AGENTS GUIDE
-Primary SDK Doc: https://github.com/Polymarket/ts-sdk/blob/main/README.md
-Use run_autonomous_trading_cycle for full automation.
+# AGENTS.md
+
+MCP_INTELLIGENCE_HIVE added for advanced autonomous trading.
+
+See Polymarket TS SDK: https://github.com/Polymarket/ts-sdk/blob/main/README.md
