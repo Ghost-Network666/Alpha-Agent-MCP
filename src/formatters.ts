@@ -271,6 +271,7 @@ export function formatDiscoverTopic(result: {
     Topic: result.topic,
     'Tag Slug': result.tagSlug,
     'Tag Id': result.tagId,
+    'Tag Id Source': (result as { tagIdSource?: string }).tagIdSource,
     'Events Count': eventCards.length,
     'Markets Count': marketCards.length,
     Events: eventCards.length ? eventCards : 'None',

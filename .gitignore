@@ -37,6 +37,9 @@ coverage/
 # Temporary
 New folder/
 
+# Local-only reference data — never commit
+DONT COMMIT THIS TO THE REPO/
+
 
 # Temporary / diagnostic / verification drivers (MCP stdio tests, etc. must never be committed; use /tmp outside tree or gitignored)
 tmp/

@@ -1,4 +1,4 @@
-/** Static Gamma tag registry (stable ids). Source: gamma all_tags snapshot. */
+/** Static Gamma tag registry (stable tagSlug → tagId). Embedded in MCP for routing; not read from any external folder at runtime. */
 export const GAMMA_TAG_BY_SLUG = {
   'product-marekt-fit': { id: 101867, label: "product marekt fit" },
   'caitlin-clark': { id: 1512, label: "caitlin clark" },

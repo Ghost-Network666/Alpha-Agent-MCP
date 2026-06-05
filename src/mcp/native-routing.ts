@@ -10,6 +10,7 @@ import {
   MCP_TO_SDK_METHOD,
   type AgentIntent,
 } from './intent-routing.js';
+import { resolveTopicTagRouting } from '../data/discovery.js';
 import {
   getIntentSession,
   inferIntentFromStrategies,
@@ -34,6 +35,7 @@ export type NativeToolRouting = {
   loopPlan?: CycleStep[];
   agentDirective: string;
   setIntent: { tool: 'configure_agent_routing'; hint: string };
+  tagRouting?: { topic: string; tagSlug: string; tagId?: number; tagIdSource: string };
 };
 
 const TRADING_RULE =
@@ -184,6 +186,17 @@ export function buildNextToolsForCall(
   }
 
   if (toolName === 'discover_topic') {
+    const topic = String(args.topic || '');
+    const tr = topic ? resolveTopicTagRouting(topic) : null;
+    if (tr?.tagId) {
+      pushStep(
+        steps,
+        'list_markets',
+        { tagId: tr.tagId, closed: false, pageSize: 15 },
+        `Markets for registry tagId ${tr.tagId} (${tr.tagSlug}).`,
+        { n: order }
+      );
+    }
     pushStep(steps, 'fetch_market', tokenRef, 'Full card for chosen token.', { n: order });
     if (active === 'weather_alpha' || (args.topic as string)?.toString().toLowerCase().includes('weather')) {
       pushStep(steps, 'get_uk_weather_forecast', { city: 'London', days: 5 }, 'External reference.', { n: order });
@@ -275,11 +288,31 @@ export function buildNativeRoutingBlock(
       ? `Built-in routing: call nextTools[0] (${nextTools[0].tool}) with given arguments. ${TRADING_RULE}`
       : `Built-in routing: call route_agent_intent({ intent: "${resolvedIntent}" }) to refresh plan. ${TRADING_RULE}`;
 
+  const topicArg = args.topic as string | undefined;
+  let tagRouting: NativeToolRouting['tagRouting'];
+  if (topicArg && typeof topicArg === 'string') {
+    const tr = resolveTopicTagRouting(topicArg);
+    tagRouting = {
+      topic: tr.topic,
+      tagSlug: tr.tagSlug,
+      tagId: tr.tagId,
+      tagIdSource: tr.tagIdSource,
+    };
+  } else if (payload?.['Tag Slug']) {
+    tagRouting = {
+      topic: String(payload.Topic || topicArg || ''),
+      tagSlug: String(payload['Tag Slug']),
+      tagId: payload['Tag Id'] as number | undefined,
+      tagIdSource: String((payload as Record<string, unknown>)['Tag Id Source'] || 'registry'),
+    };
+  }
+
   return {
     routingEnabled: true,
     autonomousAssist: cfg.autonomousAssist,
     activeIntent: resolvedIntent,
     tool: toolName,
+    tagRouting,
     toolPurpose: toolPurpose(toolName),
     sdkMethod: sdkMethodFor(toolName),
     sdkReadme: SDK_README_URL,

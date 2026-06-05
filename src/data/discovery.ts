@@ -54,6 +54,22 @@ export function listGammaTagSlugs(): Array<{ slug: string; id: number; label: st
   return Object.entries(GAMMA_TAG_BY_SLUG).map(([slug, v]) => ({ slug, id: v.id, label: v.label }));
 }
 
+/** How discover_topic resolves a topic → tagId (registry first, then SDK fetchTag). */
+export function resolveTopicTagRouting(topic: string): {
+  topic: string;
+  tagSlug: string;
+  tagId?: number;
+  tagIdSource: 'registry' | 'pending_sdk' | 'unknown';
+} {
+  const tagSlug = resolveTopicSlug(topic) ?? '';
+  if (!tagSlug) return { topic, tagSlug: '', tagIdSource: 'unknown' };
+  const staticId = gammaTagId(tagSlug);
+  if (staticId != null) {
+    return { topic, tagSlug, tagId: staticId, tagIdSource: 'registry' };
+  }
+  return { topic, tagSlug, tagIdSource: 'pending_sdk' };
+}
+
 /** @deprecated use resolveTopicSlug */
 export function resolveCategoryTagSlug(category?: string): string | undefined {
   return resolveTopicSlug(category);
@@ -138,6 +154,7 @@ export type DiscoverTopicResult = {
   topic: string;
   tagSlug: string;
   tagId?: number;
+  tagIdSource?: 'registry' | 'sdk_fetchTag';
   events: Event[];
   markets: Market[];
   sdkParamsUsed: { events: Record<string, unknown>; markets: Record<string, unknown> };
@@ -179,10 +196,14 @@ export async function discoverTopic(req: DiscoverTopicRequest): Promise<Discover
     }
   }
 
+  const tagIdSource: 'registry' | 'sdk_fetchTag' | undefined =
+    tagId != null ? (gammaTagId(tagSlug) != null ? 'registry' : 'sdk_fetchTag') : undefined;
+
   return {
     topic: req.topic,
     tagSlug,
     tagId,
+    tagIdSource,
     events,
     markets,
     sdkParamsUsed: { events: eventsParams, markets: marketsParams },
@@ -193,7 +214,15 @@ export async function discoverTopic(req: DiscoverTopicRequest): Promise<Discover
 export function getAgentRecipes(): Record<string, unknown> {
   return {
     note: 'Tier-1 compact in tools/list. Full ~145 handlers via categories. Routing always on. Health: mcp_doctor or npm run doctor.',
-    gammaTags: { count: listGammaTagSlugs().length, hint: 'discover_topic({ topic: "<slug>" }) uses static tagId when slug is in registry' },
+    gammaTags: {
+      count: listGammaTagSlugs().length,
+      hint: 'discover_topic({ topic: "<slug>" }) uses static tagId when slug is in registry; routing.tagRouting on every tool response',
+      examples: [
+        { topic: 'openai', tagSlug: 'openai', tagId: gammaTagId('openai') },
+        { topic: 'claude', tagSlug: 'claude', tagId: gammaTagId('claude') },
+        { topic: 'crypto', tagSlug: 'crypto', note: 'alias → slug; tagId via fetchTag if not in registry' },
+      ].filter((e) => e.tagId != null || 'note' in e),
+    },
     knownGotchas: KNOWN_AGENT_GOTCHAS,
     intentRouting: {
       tool: 'route_agent_intent',
