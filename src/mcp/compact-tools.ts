@@ -7,6 +7,7 @@ export const COMPACT_TOOL_DESCRIPTIONS: Record<string, string> = {
   get_agent_recipes: '[Meta] Startup JSON recipes + knownGotchas + intent registry.',
   route_agent_intent: '[Meta] Batch intent plan + enables built-in per-tool routing.',
   configure_agent_routing: '[Meta] Set routing intent only (routing always on).',
+  mcp_doctor: '[Meta] Health check + host doctor commands (Grok/Hermes/OpenClaw).',
   search_tools: '[Meta] Find tools by keyword (detail: name|summary|schema).',
   load_agent_profile: '[Meta] Register profile bundle; re-call tools/list.',
   list_tool_categories: '[Meta] List categories for get_tools_by_category.',

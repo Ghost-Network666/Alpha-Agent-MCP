@@ -106,6 +106,14 @@ After registration:
 hermes mcp test polymarket
 ```
 
+Verify health after add:
+
+```bash
+hermes mcp test polymarket
+```
+
+(`polymarket` = the server name you chose in `hermes mcp add`.)
+
 Then in any Hermes session:
 
 ```bash
@@ -206,20 +214,35 @@ This is the correct and safe way for agents to keep the MCP updated:
 
 **Note**: Requires Node.js ≥ 22.
 
+## MCP health check (doctor)
+
+Run after every `npm run build` and before trading sessions.
+
+| Host | Command |
+|------|---------|
+| **Repo (any host)** | `npm run doctor` |
+| **In MCP session** | `tools/call mcp_doctor` |
+| **Grok Build** | `grok mcp doctor alphamcp` |
+| **Hermes** | `hermes mcp test <server_name>` (name from `~/.hermes/config.yaml`, e.g. `polymarket`) |
+| **OpenClaw** | `openclaw mcp doctor <server_name> --probe` |
+
+Expect: handshake OK, tier-1 tool count ~30, `routingAlwaysOn: true`, `gammaTagCount: 100`.
+
 ## Grok Build
 
 Project config: `.grok/config.toml` (copy and fix the `cd` path to your clone).
 
 ```bash
 npm run build
-grok mcp doctor alphamcp   # expect handshake OK + ~28 tools
+npm run doctor
+grok mcp doctor alphamcp
 ```
 
 Start a **new Grok Build session** after every rebuild so the host reloads `dist/mcp.js`.
 
 User-level config can mirror the same server in `~/.grok/config.toml`. WSL users may need `bash -lc` and an explicit `node` path (see your local `.grok/config.toml`).
 
-**Agent contract:** `route_agent_intent` → `fetch_sdk_readme` (https://github.com/Polymarket/ts-sdk/blob/main/README.md) → execute routed native tools with explicit trade numbers.
+**Agent contract:** Built-in routing on every native tool → `fetch_sdk_readme` (https://github.com/Polymarket/ts-sdk/blob/main/README.md) → explicit trade numbers on `place_*`.
 
 ## OpenClaw
 
@@ -243,7 +266,13 @@ Add the server with explicit environment variables in `~/.openclaw/openclaw.json
 }
 ```
 
-Restart the OpenClaw gateway after changes. Agents should call `route_agent_intent({ intent: "session_startup" })` then `fetch_sdk_readme` (same SDK URL as above) before trading.
+Restart the OpenClaw gateway after changes.
+
+```bash
+openclaw mcp doctor polymarket --probe
+```
+
+Use the server name from `mcp.servers` in `~/.openclaw/openclaw.json`. Agents: routing is always on — follow `routing.nextTools` on every tool response.
 
 ## Other stdio hosts
 

@@ -64,6 +64,7 @@ import { normalizePlaceLimitOrderArgs } from './trading/place-limit-args.js';
 import { buildKnownGotchasMarkdown } from './mcp/agent-gotchas.js';
 import { buildIntentRoute, INTENT_REGISTRY } from './mcp/intent-routing.js';
 import { enrichNativeToolResponse } from './mcp/native-routing.js';
+import { buildMcpDoctorReport } from './mcp/mcp-doctor.js';
 import { readRoutingConfig, writeRoutingConfig } from './mcp/intent-context.js';
 import { seedSessionStrategyDefaults } from './mcp/strategy-seed.js';
 
@@ -465,8 +466,14 @@ const publicTools = [
     },
   },
   {
+    name: 'mcp_doctor',
+    description:
+      '[Meta] MCP health check (same as npm run doctor / grok mcp doctor / hermes mcp test / openclaw mcp doctor --probe). Returns handshake expectations, tier-1 tool count, routing status, gamma tag registry size, host doctor commands.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'discover_topic',
-    description: '[Discovery] EASIEST native discovery: one call returns both events AND markets for a topic (weather, sports, crypto, politics, climate, science, entertainment). Maps topic→SDK tagSlug/tagId automatically. Prefer this over list_events+list_markets with category. Always includes Yes/No TokenIds on markets. Example: discover_topic({ topic: "weather", closed: false, pageSize: 15 }).',
+    description: '[Discovery] EASIEST native discovery: events + markets for a topic. Uses static Gamma tagId registry (100 slugs) when known, else tagSlug + fetchTag. Topics: weather, sports, crypto, politics, or any slug from mcp_doctor gammaTagCount / get_agent_recipes. Example: discover_topic({ topic: "openai", closed: false }).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2099,6 +2106,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }],
         };
       }
+    }
+
+    case 'mcp_doctor': {
+      const report = buildMcpDoctorReport(strategyStore, {
+        toolsListed: currentlyExposedToolNames.size,
+        handshakeOk: true,
+      });
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(report, null, 2) }],
+      };
     }
 
     case 'configure_agent_routing': {

@@ -61,3 +61,11 @@ When using `delegate_task`, scope tools to:
 3. Only the native tools listed in the routed `steps` for that intent
 
 Sub-agents must re-run `route_agent_intent` when the goal changes — do not reuse a stale plan.
+
+## MCP health (doctor)
+
+```bash
+npm run doctor
+hermes mcp test <server_name>
+tools/call mcp_doctor
+```

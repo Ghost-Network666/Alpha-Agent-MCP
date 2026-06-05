@@ -3,6 +3,7 @@ import { getPublicClient } from '../config/client.js';
 import { KNOWN_AGENT_GOTCHAS } from '../mcp/agent-gotchas.js';
 import { INTENT_REGISTRY } from '../mcp/intent-routing.js';
 import { firstPage } from '../utils/pagination.js';
+import { GAMMA_TAG_BY_SLUG, gammaTagId } from './gamma-tag-registry.js';
 
 /** Ergonomic category labels agents use → platform tag slugs (SDK listEvents tagSlug / fetchTag for listMarkets tagId). */
 export const CATEGORY_TAG_SLUG: Record<string, string> = {
@@ -40,10 +41,17 @@ function stripAgentOnlyFields(args: Record<string, unknown>) {
 export function resolveTopicSlug(topic?: string): string | undefined {
   if (!topic || typeof topic !== 'string') return undefined;
   const trimmed = topic.trim();
+  const lower = trimmed.toLowerCase();
   const upper = trimmed.toUpperCase();
   if (TOPIC_ALIASES[upper]) return TOPIC_ALIASES[upper];
-  if (TOPIC_ALIASES[trimmed.toLowerCase()]) return TOPIC_ALIASES[trimmed.toLowerCase()];
-  return trimmed.toLowerCase();
+  if (TOPIC_ALIASES[lower]) return TOPIC_ALIASES[lower];
+  if (lower in GAMMA_TAG_BY_SLUG) return lower;
+  return lower;
+}
+
+/** All static Gamma tag slugs with stable numeric ids (for routing / discover_topic). */
+export function listGammaTagSlugs(): Array<{ slug: string; id: number; label: string }> {
+  return Object.entries(GAMMA_TAG_BY_SLUG).map(([slug, v]) => ({ slug, id: v.id, label: v.label }));
 }
 
 /** @deprecated use resolveTopicSlug */
@@ -64,6 +72,11 @@ export function buildListEventsParams(args: Record<string, unknown> = {}): Recor
 }
 
 export async function resolveTagIdFromSlug(slug: string): Promise<number | undefined> {
+  const staticId = gammaTagId(slug);
+  if (staticId != null) {
+    tagIdBySlugCache.set(slug, staticId);
+    return staticId;
+  }
   const cached = tagIdBySlugCache.get(slug);
   if (cached != null) return cached;
   const pub = getPublicClient();
@@ -179,7 +192,8 @@ export async function discoverTopic(req: DiscoverTopicRequest): Promise<Discover
 /** Static recipes so agents never guess tool names/args for common flows. */
 export function getAgentRecipes(): Record<string, unknown> {
   return {
-    note: 'Tier-1 (~32 tools) compact in tools/list. Full ~145 handlers via categories. Start with route_agent_intent.',
+    note: 'Tier-1 compact in tools/list. Full ~145 handlers via categories. Routing always on. Health: mcp_doctor or npm run doctor.',
+    gammaTags: { count: listGammaTagSlugs().length, hint: 'discover_topic({ topic: "<slug>" }) uses static tagId when slug is in registry' },
     knownGotchas: KNOWN_AGENT_GOTCHAS,
     intentRouting: {
       tool: 'route_agent_intent',

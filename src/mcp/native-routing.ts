@@ -302,7 +302,7 @@ export function enrichNativeToolResponse(
   result: ToolResult,
   store: Map<string, unknown>
 ): ToolResult {
-  if (toolName === 'configure_agent_routing') return result;
+  if (toolName === 'configure_agent_routing' || toolName === 'mcp_doctor') return result;
   const text = result?.content?.[0]?.text;
   if (!text || typeof text !== 'string') return result;
 

@@ -6,6 +6,7 @@ export const TIER1_CORE_TOOL_NAMES: readonly string[] = [
   'fetch_sdk_readme',
   'route_agent_intent',
   'configure_agent_routing',
+  'mcp_doctor',
   'list_tool_categories',
   'get_tools_by_category',
   'get_mcp_usage',
