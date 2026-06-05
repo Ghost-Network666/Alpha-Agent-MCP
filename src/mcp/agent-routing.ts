@@ -24,7 +24,7 @@ export function buildAgentRoutingPrompt(): string {
 - Obey every agentDirective. Do NOT ask the human for option menus.
 
 ## Mandatory startup (every session)
-1. tools/call configure_agent_routing({ enabled: true, intent: "<goal>", autonomousAssist: true })
+1. Built-in routing is always on — optional configure_agent_routing({ intent: "<goal>" })
 2. tools/call fetch_sdk_readme — confirm routing.sdkMethod per native tool (SDK README is canonical)
 3. prompts/get never_guess_contract + agent_routing
 4. Call native tools — each response includes routing.toolPurpose + routing.nextTools (built-in, no extra meta calls)

@@ -450,20 +450,18 @@ const publicTools = [
   {
     name: 'configure_agent_routing',
     description:
-      '[Meta] Turn built-in agent routing ON/OFF for Hermes/OpenClaw/Grok. When enabled, every native tool response includes routing.nextTools + toolPurpose + sdkMethod (SDK README via fetch_sdk_readme). autonomousAssist:true attaches full loopPlan — agent still executes each tools/call (no MCP auto-trade). Example: configure_agent_routing({ enabled: true, intent: "rewards_farm", autonomousAssist: true }).',
+      '[Meta] Set routing goal/intent only — built-in routing is ALWAYS on (cannot disable). Every native tool response includes routing.nextTools + toolPurpose + sdkMethod + loopPlan. Example: configure_agent_routing({ intent: "rewards_farm" }).',
     inputSchema: {
       type: 'object',
       properties: {
-        enabled: { type: 'boolean', description: 'Enable per-tool routing envelopes' },
         intent: { type: 'string', enum: Object.keys(INTENT_REGISTRY) },
         autonomousAssist: {
           type: 'boolean',
-          description: 'Attach full intent loopPlan on every native tool response',
+          description: 'Include full loopPlan on each response (default true)',
         },
         maxMinCostUsd: { type: 'number' },
         topic: { type: 'string' },
       },
-      required: ['enabled'],
     },
   },
   {
@@ -2105,9 +2103,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'configure_agent_routing': {
       const cfg = writeRoutingConfig(strategyStore, {
-        enabled: Boolean(args.enabled),
         activeIntent: args.intent,
-        autonomousAssist: args.autonomousAssist ?? Boolean(args.enabled),
+        autonomousAssist: args.autonomousAssist !== false,
         maxMinCostUsd: args.maxMinCostUsd,
         topic: args.topic,
       });
@@ -2122,7 +2119,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             strategies,
           })
         : null;
-      if (cfg.enabled && plan?.profile) {
+      if (plan?.profile) {
         const prof = AGENT_PROFILES[plan.profile];
         if (prof) {
           for (const cat of prof.categories) {
@@ -2140,9 +2137,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               success: true,
               mcpRouting: cfg,
               plan,
-              agentDirective: cfg.enabled
-                ? `Routing enabled. Use ANY native tool — each response includes routing.nextTools. Execute loopPlan when autonomousAssist is true. ${plan?.tradingRule || ''}`
-                : 'Routing disabled. Native tools return minimal hints only.',
+              agentDirective: `Routing is always on. Use ANY native tool — each response includes routing.nextTools. ${plan?.tradingRule || ''}`,
+              routingAlwaysOn: true,
               note: 'Re-call tools/list after enable if your host whitelists listed tools.',
             },
             null,
@@ -2156,7 +2152,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const strategies: Record<string, unknown> = {};
       for (const [k, v] of strategyStore.entries()) strategies[k] = v;
       writeRoutingConfig(strategyStore, {
-        enabled: true,
         activeIntent: args.intent,
         autonomousAssist: args.autonomousAssist !== false,
         maxMinCostUsd: args.maxMinCostUsd,

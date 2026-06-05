@@ -33,7 +33,7 @@ export type NativeToolRouting = {
   nextTools: CycleStep[];
   loopPlan?: CycleStep[];
   agentDirective: string;
-  configure: { tool: 'configure_agent_routing'; hint: string };
+  setIntent: { tool: 'configure_agent_routing'; hint: string };
 };
 
 const TRADING_RULE =
@@ -109,25 +109,17 @@ export function buildNextToolsForCall(
   }
 
   if (toolName === 'fetch_sdk_readme' || toolName === 'get_agent_recipes') {
-    pushStep(
-      steps,
-      'configure_agent_routing',
-      { enabled: true, intent: active, autonomousAssist: cfg.autonomousAssist ?? true },
-      'Turn on built-in routing on every native tool response.',
-      { n: order }
-    );
-    pushStep(steps, 'route_agent_intent', { intent: active }, 'Full batch plan (optional).', { n: order });
+    pushStep(steps, 'list_active_maker_reward_markets', { maxMinCostUsd: maxUsd }, 'Default rewards entry.', {
+      n: order,
+    });
     return steps;
   }
 
-  if (toolName === 'get_strategies' && !cfg.enabled) {
-    pushStep(
-      steps,
-      'configure_agent_routing',
-      { enabled: true, intent: 'rewards_farm', autonomousAssist: true },
-      'Enable MCP routing assist — recommended for Hermes/OpenClaw.',
-      { n: order }
-    );
+  if (toolName === 'get_strategies') {
+    pushStep(steps, 'fetch_sdk_readme', {}, 'Confirm SDK methods vs routing.sdkMethod.', { n: order });
+    pushStep(steps, 'list_active_maker_reward_markets', { maxMinCostUsd: maxUsd }, 'Start rewards loop.', {
+      n: order,
+    });
     return steps;
   }
 
@@ -246,7 +238,7 @@ export function buildNextToolsForCall(
     return steps;
   }
 
-  if (cfg.enabled && active) {
+  if (active) {
     pushStep(steps, 'route_agent_intent', { intent: active }, 'Refresh full plan for this goal.', { n: order });
   }
 
@@ -265,10 +257,11 @@ export function buildNativeRoutingBlock(
   touchIntentSession(toolName, tokenId, intent ?? undefined);
 
   const nextTools = buildNextToolsForCall(toolName, args, payload, cfg, intent);
+  const resolvedIntent = intent || cfg.activeIntent || 'rewards_farm';
   let loopPlan: CycleStep[] | undefined;
-  if (cfg.enabled && cfg.autonomousAssist && intent) {
+  if (cfg.autonomousAssist) {
     const plan = buildIntentRoute({
-      intent,
+      intent: resolvedIntent,
       topic: cfg.topic,
       tokenId: tokenId || getIntentSession().lastTokenId,
       maxMinCostUsd: cfg.maxMinCostUsd,
@@ -277,29 +270,27 @@ export function buildNativeRoutingBlock(
     loopPlan = plan.steps;
   }
 
-  const enabled = cfg.enabled;
-  const directive = enabled
-    ? nextTools.length > 0
-      ? `Routing ON: call nextTools[0] (${nextTools[0].tool}) with given arguments. ${TRADING_RULE}`
-      : `Routing ON: call route_agent_intent({ intent: "${intent || 'session_startup'}" }) to refresh plan. ${TRADING_RULE}`
-    : `Routing OFF: call configure_agent_routing({ enabled: true, intent: "rewards_farm", autonomousAssist: true }) to embed next-step routing on every native tool. ${TRADING_RULE}`;
+  const directive =
+    nextTools.length > 0
+      ? `Built-in routing: call nextTools[0] (${nextTools[0].tool}) with given arguments. ${TRADING_RULE}`
+      : `Built-in routing: call route_agent_intent({ intent: "${resolvedIntent}" }) to refresh plan. ${TRADING_RULE}`;
 
   return {
-    routingEnabled: enabled,
-    autonomousAssist: Boolean(cfg.autonomousAssist),
-    activeIntent: intent,
+    routingEnabled: true,
+    autonomousAssist: cfg.autonomousAssist,
+    activeIntent: resolvedIntent,
     tool: toolName,
     toolPurpose: toolPurpose(toolName),
     sdkMethod: sdkMethodFor(toolName),
     sdkReadme: SDK_README_URL,
     sdkReadmeTool: 'fetch_sdk_readme',
     tradingRule: TRADING_RULE,
-    nextTools: enabled ? nextTools : nextTools.slice(0, 1),
-    loopPlan: enabled && cfg.autonomousAssist ? loopPlan : undefined,
+    nextTools,
+    loopPlan,
     agentDirective: directive,
-    configure: {
+    setIntent: {
       tool: 'configure_agent_routing',
-      hint: 'configure_agent_routing({ enabled: true, intent, autonomousAssist: true }) — MCP handles routing; agent executes native tools.',
+      hint: 'configure_agent_routing({ intent: "rewards_farm"|"weather_alpha"|... }) — routing is always on; only changes goal.',
     },
   };
 }

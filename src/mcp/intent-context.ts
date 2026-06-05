@@ -9,13 +9,21 @@ import type { AgentIntent } from './intent-routing.js';
 export const MCP_ROUTING_KEY = 'mcp:routing';
 
 export type McpRoutingConfig = {
-  enabled: boolean;
+  /** Always true — built-in routing cannot be disabled. */
+  enabled: true;
   activeIntent?: AgentIntent;
-  /** When true, attach full intent loopPlan on every tool response (agent still executes each call). */
-  autonomousAssist?: boolean;
+  /** Full intent loopPlan on every native tool response (agent executes each call). */
+  autonomousAssist: boolean;
   maxMinCostUsd?: number;
   topic?: string;
   updatedAt?: string;
+};
+
+const DEFAULT_ROUTING: McpRoutingConfig = {
+  enabled: true,
+  activeIntent: 'rewards_farm',
+  autonomousAssist: true,
+  maxMinCostUsd: 10,
 };
 
 export type IntentSessionContext = {
@@ -39,14 +47,14 @@ export function touchIntentSession(tool: string, tokenId?: string, intent?: Agen
 export function readRoutingConfig(store: Map<string, unknown>): McpRoutingConfig {
   const raw = store.get(MCP_ROUTING_KEY);
   if (!raw || typeof raw !== 'object') {
-    return { enabled: false };
+    return { ...DEFAULT_ROUTING };
   }
-  const o = raw as McpRoutingConfig;
+  const o = raw as Partial<McpRoutingConfig>;
   return {
-    enabled: Boolean(o.enabled),
-    activeIntent: o.activeIntent,
-    autonomousAssist: Boolean(o.autonomousAssist),
-    maxMinCostUsd: o.maxMinCostUsd,
+    enabled: true,
+    activeIntent: o.activeIntent ?? DEFAULT_ROUTING.activeIntent,
+    autonomousAssist: o.autonomousAssist !== false,
+    maxMinCostUsd: o.maxMinCostUsd ?? DEFAULT_ROUTING.maxMinCostUsd,
     topic: o.topic,
     updatedAt: o.updatedAt,
   };
@@ -60,6 +68,8 @@ export function writeRoutingConfig(
   const next: McpRoutingConfig = {
     ...prev,
     ...patch,
+    enabled: true,
+    autonomousAssist: patch.autonomousAssist !== undefined ? patch.autonomousAssist !== false : prev.autonomousAssist,
     updatedAt: new Date().toISOString(),
   };
   store.set(MCP_ROUTING_KEY, next);

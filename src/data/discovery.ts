@@ -190,15 +190,15 @@ export function getAgentRecipes(): Record<string, unknown> {
       ),
     },
     startup: [
-      'configure_agent_routing({ enabled: true, intent: "rewards_farm", autonomousAssist: true }) — built-in routing on every native tool',
+      'Routing always on — every native tool returns routing.nextTools; optional configure_agent_routing({ intent: "rewards_farm" })',
       'OR route_agent_intent({ intent: "session_startup" }) — fetch_sdk_readme + recipes',
       'Every native tool response includes routing.nextTools + toolPurpose + sdkMethod when routing enabled',
       'prompts/get never_guess_contract + agent_routing',
       'tools/list again after load_agent_profile (strict hosts)',
     ],
-    routingToggle: {
+    setRoutingIntent: {
       tool: 'configure_agent_routing',
-      arguments: { enabled: true, intent: 'rewards_farm', autonomousAssist: true },
+      arguments: { intent: 'rewards_farm' },
     },
     automation: {
       cycle: { tool: 'run_agent_cycle', arguments: { goal: 'rewards', maxMinCostUsd: 10 } },
