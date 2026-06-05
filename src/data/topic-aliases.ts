@@ -1,9 +1,9 @@
 /**
- * Agent topic strings → Gamma tagSlug. Registry (gamma-tag-registry.ts) supplies tagId fast path.
- * Unknown topics still pass through as lowercase slug + live fetchTag.
+ * UK + US only: agent topic → Gamma tagSlug. Registry holds tagIds for these slugs only.
+ * Other regions/topics: use search({ q }) or exact slug if you know it (sdk_fetchTag).
  */
 
-/** Broad categories (uppercase keys for ergonomic category= on list_* tools). */
+/** Broad categories (category= on list_* tools). */
 export const CATEGORY_TAG_SLUG: Record<string, string> = {
   WEATHER: 'weather',
   CLIMATE: 'climate',
@@ -17,50 +17,93 @@ export const CATEGORY_TAG_SLUG: Record<string, string> = {
   MACRO: 'macro',
   ELECTIONS: 'election',
   UK: 'uk',
-  CULTURE: 'pop-culture',
-  BUSINESS: 'business',
-  FINANCE: 'finance',
-  ETF: 'etf',
-  HEALTH: 'influenza',
-  GEO: 'los-angeles',
+  US: 'politics',
 };
 
-/** All discover_topic / category aliases (lowercase + uppercase category keys). */
+/** Curated aliases — UK + US markets only. */
 export const TOPIC_ALIASES: Record<string, string> = {
   ...CATEGORY_TAG_SLUG,
 
-  // weather / climate
+  // UK
+  uk: 'uk',
+  'united-kingdom': 'united-kingdom',
+  'uk-politics': 'uk',
+  england: 'england',
+  scotland: 'scotland',
+  wales: 'wales',
+  london: 'london',
+  liverpool: 'liverpool',
+  manchester: 'manchester',
+  'premier-league': 'premier-league',
+  'champions-league': 'champions-league',
+  'europa-league': 'europa-league',
+  cricket: 'cricket',
+
+  // UK / US weather & temp markets
   weather: 'weather',
   climate: 'climate',
   temperature: 'temperature',
   'daily-temperature': 'daily-temperature',
+  'highest-temperature': 'highest-temperature',
+  'lowest-temperature': 'lowest-temperature',
+  recurring: 'recurring',
 
-  // sports
+  // US politics & elections
+  politics: 'politics',
+  political: 'politics',
+  'us-politics': 'politics',
+  us: 'politics',
+  usa: 'politics',
+  election: 'election',
+  elections: 'election',
+  'us-election': 'election',
+  trump: 'trump',
+  biden: 'biden',
+  congress: 'congress',
+  government: 'federal-government',
+  'federal-government': 'federal-government',
+  senate: 'sentate',
+  'house-races': 'house-races',
+  538: '538',
+  'legal-cases': 'legal-cases',
+  law: 'legal-cases',
+  legal: 'legal-cases',
+
+  // US macro
+  macro: 'macro',
+  'macro-graph': 'macro-graph',
+  'macro-single': 'macro-single',
+  'macro-indicators': 'macro-indicators',
+  economy: 'macro-single',
+  economics: 'macro-single',
+  fed: 'fed',
+  'federal-reserve': 'fed',
+  gdp: 'gdp',
+  inflation: 'inflation',
+  recession: 'recession',
+  'interest-rates': 'interest-rates',
+
+  // US sports
   sports: 'sports',
   sport: 'sports',
   nfl: 'nfl',
   nba: 'nba',
   mlb: 'mlb',
   nhl: 'nhl',
-  soccer: 'soccer',
   football: 'nfl',
+  soccer: 'soccer',
   ufc: 'ufc',
-  mma: 'ufc',
-  boxing: 'boxing',
-  tennis: 'tennis',
-  golf: 'golf',
-  f1: 'f1',
-  'formula-1': 'f1',
-  'premier-league': 'premier-league',
-  'champions-league': 'champions-league',
-  'europa-league': 'europa-league',
-  cricket: 'cricket',
-  esports: 'esports',
-  poker: 'poker',
   'college-football': 'college-football',
   'world-cup': 'world-cup',
+  boxing: 'boxing',
+  golf: 'golf',
+  f1: 'f1',
 
-  // crypto
+  // US geo (temp / local event tags)
+  'los-angeles': 'los-angeles',
+  la: 'los-angeles',
+
+  // Crypto (US-heavy volume; global tag)
   crypto: 'crypto',
   cryptocurrency: 'crypto',
   bitcoin: 'bitcoin',
@@ -71,114 +114,31 @@ export const TOPIC_ALIASES: Record<string, string> = {
   sol: 'solana',
   altcoins: 'altcoins',
   altcoin: 'altcoins',
-  etf: 'etf',
-  etfs: 'etf',
-  funds: 'etf',
-  defi: 'defi-app',
   nft: 'nft',
-  nfts: 'nft',
-  memecoin: 'memecoins',
   memecoins: 'memecoins',
-  'meme-coins': 'memecoins',
+  memecoin: 'memecoins',
 
-  // politics / geo / macro
-  politics: 'politics',
-  political: 'politics',
-  election: 'election',
-  elections: 'election',
-  trump: 'trump',
-  biden: 'biden',
-  congress: 'congress',
-  government: 'federal-government',
-  'federal-government': 'federal-government',
-  senate: 'sentate',
-  'house-races': 'house-races',
-  'us-politics': 'politics',
-  'us-election': 'election',
-  'uk-politics': 'uk',
-  uk: 'uk',
-  'united-kingdom': 'united-kingdom',
-  england: 'england',
-  scotland: 'scotland',
-  wales: 'wales',
-  geopolitics: 'international-affairs',
-  'international-affairs': 'international-affairs',
-  'foreign-affairs': 'foreign-affairs',
-  controversies: 'controversies',
-  'legal-cases': 'legal-cases',
-  law: 'legal-cases',
-  legal: 'legal-cases',
-  court: 'legal-cases',
-  'climate-policy': 'cop',
-  cop: 'cop',
-  paris: 'cop',
-  'maritime-transport': 'maritime-transport',
-  shipping: 'maritime-transport',
-  war: 'military-invasion',
-  military: 'military-invasion',
-  fed: 'fed',
-  'federal-reserve': 'fed',
-  macro: 'macro',
-  'macro-graph': 'macro-graph',
-  'macro-single': 'macro-single',
-  'macro-indicators': 'macro-indicators',
-  economy: 'macro-single',
-  economics: 'macro-single',
-  gdp: 'gdp',
-  inflation: 'inflation',
-  recession: 'recession',
-  'interest-rates': 'interest-rates',
-  538: '538',
-
-  // tech / ai
+  // Tech / AI (US-centric listings)
   tech: 'tech',
   technology: 'tech',
   ai: 'ai',
   'artificial-intelligence': 'ai',
   openai: 'openai',
   claude: 'claude',
-  spacex: 'spacex',
-  apple: 'apple',
-  google: 'google',
-  microsoft: 'microsoft',
-  nvidia: 'nvidia',
-  'elon-musk': 'elon-musk',
 
-  // science / health / misc
-  science: 'science',
-  healthcare: 'healthcare',
-  health: 'influenza',
-  flu: 'influenza',
-  influenza: 'influenza',
-  pandemic: 'influenza',
-  pandemics: 'pandemics',
-  space: 'space',
-  nasa: 'nasa',
-
-  // entertainment / culture
+  // Light culture (US/UK media)
   entertainment: 'entertainment',
-  culture: 'pop-culture',
   'pop-culture': 'pop-culture',
-  movies: 'movies',
-  music: 'music',
-  oscars: 'oscars',
-  awards: 'awards',
-  celebrities: 'celebrities',
-
-  // cities / geo (often tagged markets)
-  london: 'london',
-  liverpool: 'liverpool',
-  manchester: 'manchester',
-  'los-angeles': 'los-angeles',
-  la: 'los-angeles',
-  korea: 'korea',
-  'north-korea': 'korea',
-  'south-korea': 'korea',
-  shenzhen: 'shenzhen',
+  culture: 'pop-culture',
+  science: 'science',
 };
 
-/** Unique canonical slugs agents can pass to discover_topic (alias targets + registry). */
+/** Slugs with static tagIds in gamma-tag-registry (UK + US curated). */
+export function listCuratedRegistrySlugs(): string[] {
+  return [...new Set(Object.values(TOPIC_ALIASES))].sort();
+}
+
+/** Hints shown to agents — same as curated slugs. */
 export function listDiscoverTopicHints(): string[] {
-  const slugs = new Set(Object.values(TOPIC_ALIASES));
-  return [...slugs].sort();
+  return listCuratedRegistrySlugs();
 }

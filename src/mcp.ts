@@ -473,13 +473,13 @@ const publicTools = [
   },
   {
     name: 'discover_topic',
-    description: '[Discovery] EASIEST native discovery: events + markets for a topic. Static Gamma registry (~190 slugs) + aliases (bitcoin, nfl, uk, ai, macro, nft, …) → fast tagId; else tagSlug + fetchTag. Topic = alias or slug — not free-text sentences. See get_agent_recipes.supportedTopicAliases. Example: discover_topic({ topic: "bitcoin", closed: false }).',
+    description: '[Discovery] UK + US topics only: events + markets via curated aliases + registry tagId (fast). Topics: uk, london, politics, nfl, bitcoin, weather, crypto, fed, … — get_agent_recipes.supportedTopicAliases. Not global (no korea/shenzhen/etc); use search({ q }) elsewhere. Example: discover_topic({ topic: "uk", closed: false }).',
     inputSchema: {
       type: 'object',
       properties: {
         topic: {
           type: 'string',
-          description: 'Alias or slug: bitcoin, nfl, nba, crypto, politics, sports, weather, uk, ai, trump, ethereum, openai, macro, nft, … — see get_agent_recipes.supportedTopicAliases',
+          description: 'UK + US curated alias/slug only — see get_agent_recipes.supportedTopicAliases (uk, london, politics, nfl, weather, bitcoin, …)',
         },
         pageSize: { type: 'number', description: 'Per side, max 25, default 12' },
         closed: { type: 'boolean', description: 'false = open only (default)' },

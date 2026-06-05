@@ -31,7 +31,7 @@ export function resolveTopicSlug(topic?: string): string | undefined {
   if (TOPIC_ALIASES[upper]) return TOPIC_ALIASES[upper];
   if (TOPIC_ALIASES[lower]) return TOPIC_ALIASES[lower];
   if (lower in GAMMA_TAG_BY_SLUG) return lower;
-  return lower;
+  return undefined;
 }
 
 /** All static Gamma tag slugs with stable numeric ids (for routing / discover_topic). */
@@ -150,7 +150,7 @@ export async function discoverTopic(req: DiscoverTopicRequest): Promise<Discover
   const tagSlug = resolveTopicSlug(req.topic);
   if (!tagSlug) {
     throw new Error(
-      `Unknown topic "${req.topic}". Use a category alias (weather, sports, crypto, politics, nfl, bitcoin, uk, ai, macro, nft, …) or a Gamma tag slug from get_agent_recipes.supportedTopicAliases / mcp_doctor gammaTagCount.`
+      `Unknown topic "${req.topic}". UK + US curated only — see get_agent_recipes.supportedTopicAliases (e.g. uk, london, politics, nfl, bitcoin, weather). Other regions: search({ q }).`
     );
   }
 
@@ -201,11 +201,9 @@ export function getAgentRecipes(): Record<string, unknown> {
     note: 'Tier-1 compact in tools/list. Full ~145 handlers via categories. Routing always on. Health: mcp_doctor or npm run doctor.',
     gammaTags: {
       count: listGammaTagSlugs().length,
-      hint: 'discover_topic({ topic }) — alias → slug → registry tagId (fast) or sdk_fetchTag',
-      registryFastPath: [
-        'bitcoin', 'nfl', 'crypto', 'politics', 'sports', 'weather', 'uk', 'ai', 'ethereum', 'nba',
-        'trump', 'macro', 'nft', 'etf', 'altcoins', 'influenza', 'los-angeles', 'korea', 'legal-cases', 'cop',
-      ],
+      hint: 'discover_topic — UK + US curated topics only; alias → registry tagId',
+      scope: 'UK_and_US_only',
+      registryFastPath: ['uk', 'london', 'politics', 'nfl', 'bitcoin', 'weather', 'crypto', 'fed', 'election'],
       examples: ['bitcoin', 'nfl', 'openai', 'uk', 'weather'].map((topic) => {
         const tagSlug = resolveTopicSlug(topic) ?? topic;
         const tagId = gammaTagId(tagSlug);

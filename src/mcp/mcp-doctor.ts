@@ -57,7 +57,7 @@ export function buildMcpDoctorReport(
   });
   checks.push({
     name: 'gamma_tags',
-    ok: Object.keys(GAMMA_TAG_BY_SLUG).length >= 150,
+    ok: Object.keys(GAMMA_TAG_BY_SLUG).length >= 40,
     detail: `${Object.keys(GAMMA_TAG_BY_SLUG).length} static tag slugs → tagId`,
   });
 
