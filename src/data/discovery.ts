@@ -202,7 +202,10 @@ export function getAgentRecipes(): Record<string, unknown> {
     gammaTags: {
       count: listGammaTagSlugs().length,
       hint: 'discover_topic({ topic }) — alias → slug → registry tagId (fast) or sdk_fetchTag',
-      registryFastPath: ['bitcoin', 'nfl', 'crypto', 'politics', 'sports', 'weather', 'uk', 'ai', 'ethereum', 'nba', 'trump', 'macro', 'nft'],
+      registryFastPath: [
+        'bitcoin', 'nfl', 'crypto', 'politics', 'sports', 'weather', 'uk', 'ai', 'ethereum', 'nba',
+        'trump', 'macro', 'nft', 'etf', 'altcoins', 'influenza', 'los-angeles', 'korea', 'legal-cases', 'cop',
+      ],
       examples: ['bitcoin', 'nfl', 'openai', 'uk', 'weather'].map((topic) => {
         const tagSlug = resolveTopicSlug(topic) ?? topic;
         const tagId = gammaTagId(tagSlug);
