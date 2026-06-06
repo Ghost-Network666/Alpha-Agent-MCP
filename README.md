@@ -65,15 +65,17 @@ Auth note: API keys must be derived from the EOA private key. Every order payloa
 
 **Important for Agents & Safety**: This MCP is deliberately lightweight (tiny default core + categories/prompts for the full surface). Hermes allows you to register it with a safe default subset of tools so agents are not overwhelmed and sensitive actions are not exposed by default.
 
+**Hermes is the brain. Heartbeat is the core.** Hermes owns primary strategy, its native heartbeat.md / OpenClaw CLOB session liveness enforcement, the loop, and control. The MCP is the integration surface (send_heartbeat hook for host heartbeat.md compliance + route_agent_intent / run_agent_cycle with lockedStrategyKey as heartbeat-callable complete intent routing planners + supporting strategy bag for composite per-market:volume rules + signals with host externalSignals). The host drives calls from its heartbeat/resource events so the MCP remains active and the consuming agent never has to guess.
+
 **SDK source of truth (fetch, do not guess):** https://github.com/Polymarket/ts-sdk/blob/main/README.md  
 Native MCP tool: `fetch_sdk_readme` (cached HTTP) or resource `polymarket://sdk/readme`. Confirm routed tools against `sdkAlignment.mcpToSdk` from `route_agent_intent` before `place_*`.
 
-**Agent startup (every session):**
-1. `route_agent_intent({ intent: "session_startup" })` — runs `fetch_sdk_readme` + `get_agent_recipes` + `get_strategies`
-2. `route_agent_intent({ intent: "rewards_farm"|"weather_alpha"|... })` — execute every returned step in order
+**Agent startup (every host heartbeat-driven session):**
+1. On Hermes heartbeat/resource tick: `send_heartbeat` first (per host heartbeat.md contract) then `route_agent_intent({ intent: "session_startup", heartbeat: true })` — runs `fetch_sdk_readme` + `get_agent_recipes` + `get_strategies(locked?)`
+2. `route_agent_intent({ intent: "rewards_farm"|"weather_alpha"|..., lockedStrategyKey, heartbeat: true })` — execute every returned step in order (plans carry the lock + explicit next native calls)
 3. Prompts: `agent_routing`, `never_guess_contract`, `mcp_tool_structure_and_categories`, `mcp_llms_full_guide`
 
-See `AGENTS.md` and `docs/HERMES_AGENT_BOOTSTRAP.md` (paste into `~/.hermes/AGENTS.md` / `SOUL.md`). Prefer `discover_topic({ topic })` over bare category filters. `load_agent_profile` when the route plan says so, then re-call `tools/list`. Rules live in the strategy store (`update_strategy`).
+See `AGENTS.md` and `docs/HERMES_AGENT_BOOTSTRAP.md` (paste into `~/.hermes/AGENTS.md` / `SOUL.md`). Prefer `discover_topic({ topic })` over bare category filters. `load_agent_profile` when the route plan says so, then re-call `tools/list`. Rules for the locked composite live in the strategy bag (`get_strategies` / `update_strategy`); Hermes owns the primary brain and evolves them on its heartbeat ticks.
 
 ### Recommended Registration (with safe defaults)
 

@@ -70,16 +70,19 @@ The MCP registers prompts (see `PROMPTS` and `GetPromptRequestSchema`):
 
 The prompt contents are the **authoritative usage guide**. If the usage pattern changes, you **must** update the prompt text inside the GetPrompt handler. Also update this AGENTS.md.
 
-### 3. The Strategy Store is the Agent's Brain (no hardcoding)
-See the big comment at the top of `strategyStore` (line ~34) and the tool descriptions for `set_strategy` / `update_strategy` / `get_strategies`.
+### 3. The Strategy Store is a Supporting Persistent Bag (Hermes is the Brain)
+See the big comment at the top of `strategyStore` in src/mcp.ts and the tool descriptions for `set_strategy` / `update_strategy` / `get_strategies`.
 
-- The agent stores **everything** it evolves (filters, event prefs, farming rules like `quoteNearMid`, `bothSides`, exit conditions, scoring logic, `maxMinCostUsd`, etc.) under arbitrary keys in the store.
-- `get_strategies()` (no args) returns the *complete current rule set*.
-- `update_strategy` is the preferred cheap partial update (preserves everything else).
-- At the start of every autonomous loop the agent is instructed (in the prompts and in many `agentDirective`s) to call `get_strategies()` first.
-- This is why the MCP can stay tiny: the agent owns its complexity; the MCP just gives a universal persistent bag + the building-block tools.
+**Hermes (the host) is the brain, not the MCP strategy store.** Heartbeat (Hermes/OpenClaw native heartbeat.md system) is the core mechanism that keeps Hermes + OpenClaw alive and in control. The MCP must integrate with that heartbeat system to remain active. This changes the architecture to host-driven ownership:
 
-**Never** add a new dedicated tool for "farming rules" or "my filters". Route everything through the strategy tools.
+- Hermes owns primary strategy state, volume-tier rules, priceMovementRules, entry/exit logic, the loop, and control via its native heartbeat enforcement (per its heartbeat.md + OpenClaw CLOB session liveness requirements).
+- The MCP strategy store is a **lightweight, free-form, composite-key supporting persistent bag** (e.g. keys "weather:low", "politics:high"). Hermes (or the agent running inside Hermes) reads/writes it via the MCP tools on heartbeat ticks. It is not the single source of truth for the agent's "brain" — it is the integration surface the host uses to keep per-market/per-volume rules available across calls.
+- `get_strategies()` (no args or with composite key via tokenId param) returns the current bag content for the host to use.
+- `update_strategy` (preferred cheap partial) and `set_strategy` let the host evolve rules under keys it manages.
+- At the start of every host heartbeat tick / autonomous cycle the host (Hermes) is instructed (in prompts, agentDirectives, recipes, AGENTS) to call `send_heartbeat` first (liveness hook per its heartbeat.md contract), then `get_strategies(locked)` before research or execution.
+- This is why the MCP can stay tiny: Hermes owns the complexity and the loop; the MCP just gives a universal callable bag + the building-block planners (route_agent_intent / run_agent_cycle with lockedStrategyKey) + signals + explicit tools + send_heartbeat hook so the MCP surface stays responsive ("remains active") when the host drives calls from its heartbeat enforcement.
+
+**Never** add a new dedicated tool for "farming rules" or "my filters". Route everything through the strategy tools + the heartbeat-callable planners. The host decides when and how to call them from its native heartbeat.md system.
 
 ### 4. agentDirective + Never Ask the Human
 Many tools (especially reward and error paths) return an `agentDirective` field with imperative instructions like:
@@ -104,6 +107,29 @@ After code changes that touch logging, recordToolUsage, mcpUsageTracker, list_to
 2. **Fully restart/reload the MCP stdio server** in the host (e.g. disable/re-enable the server in Claude Desktop, or kill the node process and relaunch). A stale dist/mcp.js causes exactly `McpError: logger is not defined` (or subsequent unreachable) on the discovery/meta tools, while `polymarket://markets` resource may still partially respond.
 - In this workspace, verification is always pure native (`"/mnt/c/Program Files/nodejs/node.exe" -e '...' ` spawning dist/mcp.js over pipes with full init + calls, zero committed test .js files; all in /tmp or ephemeral only).
 - After host restart: re-call the SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md), then `prompts/get "mcp_llms_full_guide"`, `list_tool_categories`, `get_tools_by_category("Meta")`, `get_mcp_usage` immediately.
+
+## Continuous Improvement Ritual (Grok Skill — You Never Stop Looking to Improve)
+
+This is a **standing discipline** for every meta-agent (and the consuming agents using this MCP) after any "done making changes" that touches routing, intelligence, recipes, doctor, prompts, strategy store behavior, meta tools, categories, agent guidance, or AGENTS itself:
+
+1. `npm run build` (must be clean, 0 errors).
+2. **Run the MCP locally "in here /mcp as its loaded in grok now"**: 
+   - Use the connected/registered alphamcp instance via the proper protocol: first `search_tool` (to discover current schemas for alphamcp__*), then `use_tool` calls for get_agent_recipes, mcp_doctor, list_tool_categories, get_tools_by_category (Intelligence, Automation, Meta, etc.), fetch_sdk_readme (mandatory), get_strategies / update_strategy, route_agent_intent (with new or changed intents + lockedStrategyKey + heartbeat), get_mcp_usage.
+   - Also run a **fresh local execution** of the current dist (using the full node path e.g. `"/mnt/c/Program Files/nodejs/node.exe" -e 'require("./dist/mcp/intent-routing.js"); ... buildIntentRoute(...)` or full stdio pipe handshake + calls over the built dist/mcp.js, all ephemeral — never commit test scripts).
+3. Confirm **all changes work local as expected** (new/changed intents appear in recipes + INTENT_REGISTRY, plans from route have the correct steps + conditional agentDirectives, narrow research sequence + persist-after-each + send_heartbeat first + lock toggle behavior, mcp_doctor reports healthy + routingAlwaysOn + correct intentCount, no raw data, "never guess" contract strengthened, Hermes brain / no-models / host-driven orchestration contract holds).
+4. **Explicitly tell the user** what you achieved (specifics, evidence from local run + registered calls, any transients like "profile" with the reload instruction).
+5. **Proactively look for and state the next improvement / gap** (scan recipes, doctor, prompts, routing, categories, formatters, AGENTS; never declare "complete and done"; small high-value things like surfacing lock state more visibly, richer mixed-lock multi-key examples, dynamic schema coverage, externalSignals usage patterns, V2 edge cases, etc.).
+6. **Update memory**: edit AGENTS.md (add or reinforce the ritual + any new facts), carry the summary into successor compaction context, and reference the loop in future sessions. The phrase "you never stop looking to improve" is now permanent operating principle.
+
+This ritual was requested verbatim: "make sure when your done making all changes, run the mcp in here /mcp as its loaded in grok now, means make sure all changes work local as expected if they do, tell me whar you achieve and look for the next improvement, update your memory with this grok skill, you never stop looking to improve".
+
+It applies after the lock-toggle work, narrow research composition, any future Hermes/OpenClaw heartbeat alignment, intelligence surface, or "complete and production" passes. Treat every verification as an opportunity to find the next strengthening of the "never guess" + host-brain contract.
+
+**NO COMMITS GATE (permanent)**: No commits (or PRs) are allowed until route_agent_intent + INTENT_REGISTRY + buildIntentRoute provide explicit intent-language plans + rich agentDirectives that give complete deterministic routing for 100% of native MCP tools (every tool in the publicTools + secureTools arrays, all intelligence narrow tools, all strategy tools, all meta, all advanced/prepare, all weather, all portfolio/activity, all cancels/post/heartbeat, all on-chain CTF, all leaderboards/comments/taxonomy/sports/series etc.). 
+
+Current bar (as of latest ritual pass): 43+ intents (meta_introspection_full, discovery_full, market_data_deep, trading_cancels_management, onchain_ctf_workflows, gasless_prepare_all, portfolio_activity_full, *_complete, etc.). Every native tool name must appear in at least one plan's steps or primaryTools. Plans must carry "re-call route_agent_intent", "NEVER guess the next tool name/sequence/params", "COMPLETE COVERAGE" language. 
+
+In every post-change ritual: (a) audit that new/ changed tools are covered by an intent, (b) add/extend intents + branches if gaps exist, (c) npm run build clean, (d) local node.exe require + buildIntentRoute calls on the new/completeness intents + spot-checks for rich directives + tool coverage in steps, (e) only then consider the change "done" for commit. Update completeIntentCoverage in get_agent_recipes and the ritual note here. This is non-negotiable for the "allowing all native mcp tools completely route the agent to never guessing" contract.
 
 ## SDK Surface — Full Exhaustive Coverage of the Unified @polymarket/client TS SDK (v0.1.0-beta.2, current repo state) + Known Issues / Gaps / MCP Workarounds
 
@@ -265,12 +291,40 @@ Similar: use `list_markets` or `list_active...` for candidates, `get_farmability
 - This is the native, efficient way (bridged from platform WS).
 - **Note on `polymarket://markets`**: Convenience snapshot only (`listMarkets({closed:false, pageSize:20})` first page). Skewed toward trending markets; not a full catalog. Primary discovery: **`discover_topic({ topic })`** (events + markets + token IDs), then `search`, `list_markets`/`list_events` with explicit `tagSlug`/`tagId` or topic alias (see `src/data/discovery.ts`). Token IDs from any card are valid for `fetch_market({tokenId})` and trading tools.
 
-### Strategy Store as Your Persistent Brain (Use for *Everything*)
-- Keys are free-form (e.g. `"filter:liquidity_strict"`, `"rules:current_farming"`, `"prefs:events"`).
-- Store any JSON: liquidity mins, volume thresholds, preferred categories, exit rules, custom scoring, 24/7 params, etc.
+### Strategy Store as Supporting Persistent Bag (Hermes Owns the Brain + Heartbeat Loop)
+- Keys are free-form (e.g. `"filter:liquidity_strict"`, `"rules:current_farming"`, `"prefs:events"`, or composite `"weather:low"`).
+- **Hermes (the host) is the brain and owns primary strategy, the heartbeat.md / OpenClaw enforcement loop, and control.** The MCP strategy store is the supporting integration bag the host reads/writes on its native heartbeat ticks.
+- **For true multi-market autonomy use composite keys** for per-market + per-volume distinct strategies that Hermes manages: `"weather:low"`, `"politics:high"`, `"crypto:medium"`, etc.
+- Store under the composite key: `volumeTier`, `marketCategory`, `strategyLock: true`, `priceMovementRules` (drift thresholds, reprice conditions), full entry/exit/reprice/sizing/drawdown protection rules, plus any research signals. Hermes decides the content and when to evolve it.
 - `update_strategy` for cheap partial changes (everything else preserved, including prior custom fields).
-- `get_strategies()` (no args) = your complete evolved logic at the start of every autonomous loop.
-- Persist critical long-term rules to your external memory (e.g. Honcho) if needed; the store is in-memory per MCP process.
+- `get_strategies()` (no args) or with composite key returns the current bag content. The host loads it first on every heartbeat tick before calling planners or executing.
+- Persist critical long-term rules to the host's primary external memory (e.g. Honcho) if needed; the MCP bag is in-memory per process and is a supporting surface, not the source of truth.
+
+**Example — store a locked per-market/per-volume strategy:**
+```json
+{
+  "name": "update_strategy",
+  "arguments": {
+    "tokenId": "weather:low",
+    "volumeTier": "low",
+    "marketCategory": "weather",
+    "strategyLock": true,
+    "priceMovementRules": { "driftThreshold": 0.01, "requoteOnlyOnDrift": true, "maxRequoteRatePerSidePerSec": 8 },
+    "entry": { "nearMid": true, "bothSides": true },
+    "exit": { "adverseSelection": true, "betterOpportunity": true },
+    "sizing": { "intent": "reward_farming", "maxMinCostUsd": 10 }
+  }
+}
+```
+
+**Hermes (host) heartbeat-driven locked loop (MCP as integration surface only):**
+Hermes owns the brain + native heartbeat.md / OpenClaw CLOB liveness enforcement (the core that keeps Hermes + OpenClaw alive and in control). The strict "stay locked only to this composite key for the tick" behavior is **off by default** and is fully controlled by the host agents (Hermes or OpenClaw). On every host heartbeat / resource notification the host:
+1. Calls `send_heartbeat` FIRST (the explicit MCP hook for its heartbeat.md contract to maintain CLOB session health and prevent auto-cancels).
+2. Calls `get_strategies({tokenId: "weather:low"})` (or full + filter client-side) to load the exact rules for *that* market/volume from the supporting bag (including the `strategyLock` flag).
+3. (To engage the strict mode) Calls `route_agent_intent({ intent: "enable_locked_autonomy", lockedStrategyKey: "weather:low" })` — this is the explicit "tool that locks the agent". It sets `strategyLock: true` on the key. To turn the strict lock **off** (return to default): `route_agent_intent({ intent: "disable_locked_autonomy", lockedStrategyKey: "weather:low" })` or direct `update_strategy({ tokenId: "weather:low", strategyLock: false })`.
+4. Calls `route_agent_intent({ intent: "weather_alpha" or "heartbeat_locked_autonomy", lockedStrategyKey: "weather:low", heartbeat: true })` or `run_agent_cycle(...)` — these are heartbeat-callable planners that return the complete authoritative deterministic plan. The plan always starts with get_strategies so the executing host sees the current strategyLock flag. If true: full strict locked mode (narrow research steps + persist after each + "stay only on this key" + obey the key's priceMovementRules + explicit numbers from locked+live). If false/off (default): the key is still excellent for targeted narrow research/signals, but no hard "you must stay locked here only" enforcement — the host brain may freely choose other keys or broader behavior.
+5. Executes the returned steps exactly (research tools only feed the locked entry; execution is always explicit from the locked plan + live signals).
+MCP remains active because Hermes drives the calls from its own heartbeat enforcement layer. The strategy bag + planners + send_heartbeat + the on/off lock intents (enable/disable_locked_autonomy) are the integration contract. The host (not the MCP) decides when the strict lock is active for any given composite key.
 
 **Example call to evolve rules:**
 ```json
@@ -298,6 +352,12 @@ Similar: use `list_markets` or `list_active...` for candidates, `get_farmability
 **Resources for live data (heartbeat/autonomy pattern)**: Subscribe via the MCP resources protocol (not tools). Examples in `src/mcp/resources.ts` or by calling `list_resources`. Prefer over polling: `polymarket://market/{tokenId}/book` + `wait_seconds` for live signals in loops (X/heartbeat patterns for agents that stay productive in background).
 
 **Intelligence/External + X sentiment**: Use host x_search (or sentiment tools) for external signals; pass to alpha_report via `externalSignals` (enhanced for contradiction: X vs book skew tied to competitionSignal/farmability). Research (External/Intelligence/Discovery cats) first, persist to strategy, execute after. get_mcp_usage for usage/intel patterns.
+
+**MCP Intelligence deliberately avoids the common model-hosting categories (hard constraint for direct Hermes/OpenClaw use)**: Current prediction market intelligence systems, on-chain analytics platforms, and autonomous trading agents most solutions fall into: Simple alpha reports / ranking engines; Bayesian signal blending; Basic regime detection; External data scraping + LLM summarization. The MCP Intelligence layer (generate_alpha_report/alpha_report, rank_market_opportunities, compute_market_signals, get_farmability) stays inside the MCP as a research service only — it does not handle models or host a model under MCP because the MCP is used directly by Hermes and OpenClaw. It produces only deterministic research-backed signals + simple ranking/health/competition/farmability cards from native SDK + host-injected externalSignals. Lightweight helpers (e.g. computeBayesianPosterior for contradiction detection in the card only) are deterministic fusion aids, not hosted blending engines or regime detectors. Any complex modeling/regime/LLM/scraping summarization is performed by Hermes (the brain) or supplied upstream. All signals persist via update_strategy under the Hermes-managed locked per-market/per-volume composite key for the host to consume on heartbeat ticks. The layer must never execute trades directly — only provide data.
+
+**Narrow specialized research tools close the granularity gap while preserving the intent routing contract**: New narrow single-mandate tools (get_liquidity_health, get_competition_signal, compute_divergence, get_reward_farmability_snapshot, analyze_signal_contradiction) + granular research_* intents were added so the host can run many specialized research steps on its own heartbeat ticks (calling the narrow native tools or route_agent_intent with the granular intents, then update_strategy after each narrow result under the exact locked composite). The MCP provides the callable narrow research surface and deterministic plans; it does not run any internal continuous agents, swarms, or loops. Hermes (host) does the orchestration and any modeling on the persisted narrow signals. See get_agent_recipes (new narrowResearchMandates section + intelligenceLayerRole + endToEndProductionAutonomousExample) + updated mcp_tool_structure_and_categories prompt. This directly addresses gaps for "narrow mandates writing structured signals back to the strategy store" without defeating the fundamental "Hermes and OpenClaw use intent on the MCP using native tools" model.
+
+See get_agent_recipes (intelligenceLayerRole + narrowResearchMandates + endToEndProductionAutonomousExample, which notes the host may optionally apply its own modeling to persisted signals) + mcp_doctor (intelligenceRole) + prompts (mcp_tool_structure_and_categories). This research + explicit contrast reinforces the "never guess" + production contract.
 
 Always cross with the loaded prompts for current X insights and exact mappings.
 

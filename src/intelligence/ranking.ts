@@ -55,6 +55,11 @@ export function rankOpportunities(
   inputs: OpportunityInput[],
   opts: { goal: string; maxResults?: number } = { goal: 'rewards' }
 ): RankedOpportunity[] {
+  // Research / signal generation only. Returns ranked signals (scores, actionability, bayesian etc.)
+  // for persistence to the Hermes-managed locked strategy store entry (composite market:volume key).
+  // Intelligence layer must never execute trades or make decisions — data only for Hermes heartbeat orchestration.
+  // Host (Hermes) calls this via MCP on heartbeat, feeds output to update_strategy(lockedKey), then uses
+  // the updated locked strategy + these signals for execution decisions.
   const maxResults = Math.min(Math.max(opts.maxResults ?? 5, 1), 10);
   const goal = opts.goal;
 
@@ -146,6 +151,9 @@ export function rankOpportunities(
       signals,
       recommendation,
       nextTools: [...new Set(nextTools)],
+      // Production for Hermes heartbeat: persist these signals to the locked composite key Hermes manages.
+      // Example: update_strategy({ tokenId: lockedStrategyKey, rankedOpportunity: this, lastTick: iso }). Then on next tick load get_strategies(locked) for price movement + execution.
+      persistToLockedStrategy: 'update_strategy({ tokenId: "<your-locked-market:volume-key>", rankedSignals: <this or full list>, lastTick: new Date().toISOString() }) — feed Intelligence research to Hermes-managed locked strategy store before execution decision.'
     };
   });
 

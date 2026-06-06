@@ -4,6 +4,23 @@ import { fetchFarmabilitySnapshot } from './farmability.js';
 import { fetchRewardCandidates } from './rewards-candidates.js';
 import { rankOpportunities, type OpportunityInput } from './ranking.js';
 
+/**
+ * Intelligence layer = pure research + signal generation service.
+ * Called by Hermes (the brain) via its native heartbeat.
+ * Produces research-backed signals (ranked opportunities, scores, fusion/contradiction, health indicators).
+ * Signals (not decisions) are fed by host into the strategy store (supporting data layer) under the
+ * locked per-market/per-volume composite key via update_strategy.
+ * This layer must never execute trades directly — only provide data for Hermes to use when executing
+ * the locked strategy on heartbeat.
+ * All outputs include nextTools and agentDirective for host orchestration.
+ *
+ * Unlike common categories (simple alpha reports/ranking engines, Bayesian signal blending, basic regime
+ * detection, external scraping + LLM summarization), this deliberately hosts no models. Lightweight helpers
+ * (e.g. computeBayesianPosterior for card contradiction only) are deterministic fusion aids only.
+ * MCP does not host models or a model under MCP because it is used directly by Hermes and OpenClaw.
+ * Complex work stays with the host brain or externalSignals.
+ */
+
 export type AlphaReportGoal = 'rewards' | 'weather' | 'mispricing' | 'discovery';
 
 export type AlphaReportRequest = {
@@ -38,6 +55,8 @@ export type AlphaReport = {
   agentDirective: string;
   nextTools: string[];
   hostNote: string;
+  // Production: always persist opportunities/signals to Hermes-managed locked strategy key via update_strategy before using on heartbeat.
+  persistNote?: string;
 };
 
 function marketLiquidityScore(m: Record<string, unknown>): number {

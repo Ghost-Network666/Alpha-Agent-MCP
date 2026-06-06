@@ -52,8 +52,8 @@ export function getToolsByCategory(
     }
 
     const n = t.name;
-    if (catLower === 'intelligence' && /alpha_report|generate_alpha|market_signals|route_agent_intent/.test(n)) return true;
-    if ((catLower === 'intelligence' || catLower === 'sentiment') && /alpha_report|generate_alpha|market_signals|compute.*signal|external|contradiction/.test(n)) return true; // Sentiment alias -> Intelligence for X sentiment/contradiction flows; use get_tools_by_category("Sentiment") or "Intelligence" (may surface 0+ if no exact prefix match, falls to keyword)
+    if (catLower === 'intelligence' && /alpha_report|generate_alpha|market_signals|route_agent_intent|liquidity_health|competition_signal|divergence|reward_farmability_snapshot|signal_contradiction/.test(n)) return true;
+    if ((catLower === 'intelligence' || catLower === 'sentiment') && /alpha_report|generate_alpha|market_signals|compute.*signal|external|contradiction|liquidity_health|competition_signal|divergence|reward_farmability|signal_contradiction/.test(n)) return true; // Sentiment alias -> Intelligence for X sentiment/contradiction flows; use get_tools_by_category("Sentiment") or "Intelligence" (may surface 0+ if no exact prefix match, falls to keyword)
     if (catLower === 'external' && /crypto_spot|uk_weather|get_weather/.test(n)) return true;
     if (catLower === 'rewards' && /list_active_maker|farmability|maker_reward|optimized_reward/.test(n)) return true;
     if (catLower === 'trading' && /place_limit|place_market|cancel_|post_order|split_position|merge_position|redeem_position|get_order_book|get_spread/.test(n)) return true;

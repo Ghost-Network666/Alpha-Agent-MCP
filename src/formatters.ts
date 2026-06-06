@@ -147,6 +147,19 @@ function extractOutcomeTokens(m: any): { yes?: string; no?: string; tokenIds?: s
   return {};
 }
 
+/** Extract V2 production fields (min order size, tick size, neg risk) for intel/ranked/market cards (post Apr 2026 CLOB V2). */
+function extractV2Fields(m: any): { minOrderSize?: number; tickSize?: number; negRisk?: boolean } {
+  if (!m) return {};
+  const min = (m as any).min_order_size ?? (m as any).minOrderSize ?? (m.metrics as any)?.minOrderSize;
+  const tick = (m as any).tick_size ?? (m as any).tickSize ?? (m.metrics as any)?.tickSize;
+  const neg = (m as any).neg_risk ?? (m as any).negRisk;
+  return {
+    minOrderSize: min != null ? Number(min) : undefined,
+    tickSize: tick != null ? Number(tick) : undefined,
+    negRisk: typeof neg === 'boolean' ? neg : undefined,
+  };
+}
+
 function truncateAddress(addr?: string | null): string | undefined {
   if (!addr || typeof addr !== 'string') return undefined;
   if (addr.length <= 10) return addr;

@@ -1,4 +1,8 @@
-/** Precision-weighted Bayesian update (deterministic; host LLM supplies signals). */
+/** Precision-weighted Bayesian update (deterministic; host LLM supplies signals).
+ * Lightweight deterministic signal-fusion helper for contradiction detection inside research cards only.
+ * Not a hosted Bayesian signal blending model or engine. Complex modeling/regime/LLM left to Hermes (the brain)
+ * or supplied via externalSignals. MCP does not host models or a model under MCP (used directly by Hermes/OpenClaw).
+ */
 export function computeBayesianPosterior(params: {
   prior: number;
   signal: number;

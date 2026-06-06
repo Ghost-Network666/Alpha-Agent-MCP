@@ -51,6 +51,7 @@ import {
   fetchFarmabilitySnapshot,
   buildAlphaReport,
   fetchRewardCandidates,
+  rankOpportunities,
 } from './intelligence/index.js';
 import { getToolsByCategory, ensureCategoryPrefix } from './mcp/category-match.js';
 import { compactTools } from './mcp/compact-tools.js';
@@ -84,16 +85,19 @@ const MARKET_TOKEN_REF_PROPERTIES = {
 process.env.MCP_MODE = '1';
 process.env.MCP_SERVER = 'true';
 
-// === Simple in-memory strategy / rules / config store for autonomous agents (lightweight by design) ===
-// The core reason the MCP can stay tiny (~8-9 default tools via categories) while giving the agent
-// full power to dynamically manage *anything*: filters (liquidity, volume, spread, cost), operating rules,
-// which events/categories, "best to high" ranking prefs, market farming rules (quote near mid, both sides,
-// sticky, low-comp, exit conditions, 24/7 params), custom scoring, preferred markets, etc.
-// Agent stores/evolves its own rules here using any key (e.g. "rules:current_farming", "filter:liquidity_high",
-// "config:best_events", "global:operating_rules", or a tokenId). No extra tools = lightweight.
-// Partial updates via update_strategy; retrieve all with get_strategies (no args).
-// Persist critical long-term ones to your memory layer (e.g. Honcho). Lost on MCP restart otherwise.
-const strategyStore = new Map<string, any>(); // key (tokenId or ruleKey) -> arbitrary object the agent owns
+// === Simple in-memory strategy / rules / config store (supporting persistent bag for host-driven autonomy) ===
+// Hermes (the host) is the brain and owns primary strategy, volume-tier rules, priceMovement, the loop,
+// and control via its native heartbeat enforcement layer (heartbeat.md / OpenClaw CLOB session liveness).
+// Heartbeat is the core mechanism that keeps Hermes + OpenClaw alive and in control.
+// This MCP integrates with that system to "remain active": hosts call send_heartbeat (liveness hook per their
+// heartbeat.md contract), get_strategies (read locked composite market:volume rules), MCP planners
+// (route_agent_intent / run_agent_cycle with lockedStrategyKey for complete deterministic intent plans),
+// intel tools (with host-provided externalSignals from Hermes x_search etc.), explicit execution tools,
+// and update_strategy (evolve the shared bag under keys the host manages).
+// The store is lightweight, free-form, composite-key friendly (e.g. "weather:low", "politics:high").
+// It is a supporting surface, not the brain. Partial updates via update_strategy; retrieve with get_strategies.
+// Persist critical long-term ones to the host's primary memory (e.g. Honcho). Lost on MCP restart otherwise.
+const strategyStore = new Map<string, any>(); // composite key (e.g. market:volume or tokenId) -> rules the host (Hermes) owns and drives via heartbeat
 function getStrategyKey(tokenId: string, market?: string) {
   return market ? `${tokenId}:${market}` : tokenId;
 }
@@ -416,13 +420,15 @@ const publicTools = [
   },
   {
     name: 'run_agent_cycle',
-    description: '[Meta] Deterministic automation plan: ordered tools/call steps for a goal. Host executes; no LLM in MCP.',
+    description: '[Meta] HOST HEARTBEAT-DRIVEN PLANNER: Returns deterministic complete plan for locked per-market:volume strategies. Hermes (host) is the brain and owns the heartbeat.md / OpenClaw enforcement loop that keeps sessions alive and in control. When lockedStrategyKey provided, plan contains authoritative end-to-end sequence (send_heartbeat FIRST for host to call on its native heartbeat/resource events per heartbeat.md, get_strategies(locked composite), research/intel with host externalSignals, explicit execution with numbers from locked rules + live signals, update_strategy to the locked key). MCP is the integration surface (no brain, no internal loop) — pure planner so the MCP remains active when the host drives calls from its heartbeat system. Host executes every step.',
     inputSchema: {
       type: 'object',
       properties: {
         goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'trading', 'discovery'] },
         topic: { type: 'string' },
         maxMinCostUsd: { type: 'number' },
+        lockedStrategyKey: { type: 'string', description: 'Composite e.g. "weather:low" or "market:volume". Locks the returned plan + agentDirective to the exact per-market/per-volume strategy entry that Hermes manages. Enables heartbeat-driven locked autonomy via the host loop.' },
+        heartbeat: { type: 'boolean', description: 'When true (or with lockedStrategyKey), the plan starts with send_heartbeat as the first step for the host (Hermes/OpenClaw) to invoke on its native heartbeat/resource events (per heartbeat.md CLOB liveness contract) before loading the locked strategy and executing the research-backed plan.' },
       },
       required: ['goal'],
     },
@@ -430,7 +436,7 @@ const publicTools = [
   {
     name: 'route_agent_intent',
     description:
-      '[Meta] PRIMARY intent router: intent → ordered native tools/call steps + sdkAlignment (MCP↔SDK README) + load_agent_profile when needed. Routes WHICH tools — never price/size/side. START: session_startup (fetch_sdk_readme first). Intents: session_startup, rewards_farm, weather_alpha, mispricing_flip, trading_monitor, discovery_scan, check_orderbook, check_spread, check_farmability, alpha_scan, place_reward_maker, place_limit_explicit, rotate_after_failure.',
+      '[Meta] PRIMARY INTENT ROUTER for complete authoritative plans: intent (incl. heartbeat_locked_autonomy) → ordered native tool steps + sdkAlignment (MCP↔SDK README) + load_agent_profile when needed. Routes WHICH tools — never price/size/side. START: session_startup (fetch_sdk_readme first). Hermes (host) is the brain; its heartbeat.md / OpenClaw system is the core liveness and control mechanism. When lockedStrategyKey + heartbeat context: plan includes send_heartbeat FIRST (host calls on its native heartbeat/resource events per its heartbeat.md contract to keep CLOB session healthy), get_strategies(locked composite that Hermes owns), research (cats + alpha with host externalSignals), explicit exec, update_strategy (persist to the locked entry Hermes manages). MCP provides the plans as integration surface so it remains active under host heartbeat-driven calls. Intents include session_startup, rewards_farm, heartbeat_locked_autonomy, etc. Host executes the steps.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -444,6 +450,8 @@ const publicTools = [
         slug: { type: 'string' },
         maxMinCostUsd: { type: 'number' },
         goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'trading', 'discovery'] },
+        lockedStrategyKey: { type: 'string', description: 'Composite e.g. "weather:low" or "market:volume". Locks the entire returned plan + agentDirective to this per-market/per-volume strategy entry. Hermes (host) owns the primary brain and the heartbeat.md loop; this key lets the host drive locked autonomy by calling MCP planners from its heartbeat/resource events.' },
+        heartbeat: { type: 'boolean', description: 'Prepend send_heartbeat as first step in the plan. The host (Hermes/OpenClaw) must call this on its native heartbeat/resource notifications (per heartbeat.md CLOB session health contract) before get_strategies(locked) + research-backed execution. This is how the MCP remains active under host control.' },
       },
       required: ['intent'],
     },
@@ -1421,7 +1429,7 @@ const secureTools = [
   },
   {
     name: 'send_heartbeat',
-    description: '[Trading] Send heartbeat to maintain active CLOB session (prevents auto-cancel of open orders if not sent regularly). From llms.txt trade/send-heartbeat. Useful for long-lived MCP/agents. SDK may handle internally for WS; this exposes for REST/session. Rate limit low.',
+    description: '[Trading] Explicit heartbeat hook for host (Hermes/OpenClaw) native heartbeat enforcement. Call regularly on the host heartbeat tick / resource notification (per Hermes heartbeat.md + OpenClaw CLOB session liveness requirements) to prevent auto-cancel of resting orders. Hermes is the brain and owns the loop/control; this MCP tool is the integration surface the host invokes to keep the CLOB session healthy while driving its own strategy and calling other MCP planners. SDK/WS may also manage keepalives internally; this is the explicit surface for host-driven heartbeat.md compliance. Rate limit low — follow host policy.',
     inputSchema: { type: 'object', properties: {} }
   },
 
@@ -1801,7 +1809,7 @@ const secureTools = [
   },
   {
     name: 'compute_market_signals',
-    description: '[Intelligence] Deterministic signal bundle for one tokenId: farmability snapshot + optional Bayesian edge when prior/signal/weight provided. No LLM in MCP — your host model interprets. Example: compute_market_signals({ tokenId, prior: 0.42, signal: 0.55, weight: 0.4 }).',
+    description: '[Intelligence] Research service only — produces deterministic research-backed signals (farmability snapshot + optional Bayesian posterior/divergence when prior/signal/weight from host provided). Signals (not decisions) for persistence to the Hermes-managed locked per-market/per-volume strategy store entry via update_strategy under the composite key. Intelligence layer must never execute trades directly — only provide data. Called by Hermes (brain) via heartbeat. No LLM in MCP — host interprets and decides on locked strategy execution. Example: compute_market_signals({ tokenId, prior: 0.42, signal: 0.55, weight: 0.4, lockedStrategyKey: "weather:low" }).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1815,7 +1823,7 @@ const secureTools = [
   },
   {
     name: 'generate_alpha_report',
-    description: '[Intelligence] PRIMARY alpha report: liquid mid-price markets, confidence/actionability scores, agentDirective. Alias: alpha_report.',
+    description: '[Intelligence] Research service only — PRIMARY alpha report producing research-backed signals: ranked opportunities with composite/confidence/actionability scores, fusion/contradiction notes, farmability health, bayesian divergence, competitionSignal. Outputs are signals and cards (not decisions or trades). Must be fed into the strategy store (supporting data layer) under the Hermes-managed locked composite key (market:volume) via update_strategy so Hermes (the brain) can use them when executing the locked per-market/per-volume strategy on its heartbeat. Intelligence layer must never execute trades directly — only provide data. Called by Hermes via heartbeat orchestration. Alias: alpha_report.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1849,8 +1857,36 @@ const secureTools = [
     },
   },
   {
+    name: 'rank_market_opportunities',
+    description: '[Intelligence] Research service only — ranks opportunities into research-backed signals (compositeScore, confidence, actionability, bayesianDivergenceBps, competitionSignal, currentMid, farmabilityScore, rewardAttractiveness, liquidity etc.). Takes array of opportunity inputs (tokenId + optional prior/externalSignal from host, farmability, rewardMeta). Returns ranked list with signals and recommendations (for host interpretation only). Output is pure data/signals — must be fed to the Hermes-managed locked per-market/per-volume strategy store via update_strategy under the exact composite key so Hermes (the brain) can use when executing the locked strategy on heartbeat. Intelligence layer must never execute trades directly — only provide data. No decisions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'discovery'], description: 'Scoring context.' },
+        opportunities: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              tokenId: { type: 'string' },
+              label: { type: 'string' },
+              prior: { type: 'number' },
+              externalSignal: { type: 'number' },
+              signalWeight: { type: 'number' },
+              source: { type: 'string' },
+            },
+            required: ['tokenId'],
+          },
+          description: 'Inputs including host-provided externalSignals for fusion.'
+        },
+        maxResults: { type: 'number', description: 'Default 5, max 10.' },
+      },
+      required: ['goal', 'opportunities'],
+    },
+  },
+  {
     name: 'alpha_report',
-    description: '[Intelligence] Alias of generate_alpha_report — same args and response.',
+    description: '[Intelligence] Alias of generate_alpha_report — research service producing signals only for persistence to locked strategy store (Hermes brain consumes on heartbeat; no direct trades). Same args and response as generate_alpha_report.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1867,6 +1903,88 @@ const secureTools = [
         volumeNumMin: { type: 'number' },
       },
       required: ['goal'],
+    },
+  },
+
+  // === Narrow specialized Intelligence tools (single-mandate research services) ===
+  // These exist so the host (Hermes) can orchestrate "swarm-like" narrow research on its own heartbeat
+  // by calling many small native tools + persisting after each under the locked composite key.
+  // MCP never runs continuous agents or loops internally — all composition and timing is host-driven
+  // via route_agent_intent (granular research intents) or direct calls after loading the Intelligence category.
+  // Every tool reinforces: signals only, persist via update_strategy to the exact lockedStrategyKey,
+  // never execute trades. This closes granularity gaps while fully preserving the "host uses intent +
+  // native tools" contract.
+  {
+    name: 'get_liquidity_health',
+    description: '[Intelligence] Narrow single-mandate research service: returns focused liquidity health, depth, spread, skew, and competitionSignal card for one token. Use for a specific narrow mandate on heartbeat. Accepts externalSignals for host context. Output includes persistNote: update_strategy under your locked composite key. Research service only — no decisions, no trades.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string' },
+        externalSignals: { type: 'array', items: { type: 'object' } },
+        lockedStrategyKey: { type: 'string', description: 'Composite key (e.g. "weather:low") for persist guidance' },
+      },
+      required: ['tokenId'],
+    },
+  },
+  {
+    name: 'get_competition_signal',
+    description: '[Intelligence] Narrow single-mandate research service: extracts and returns structured competition / book pressure / adverse selection signals for one token (from farmability + rewards meta). Narrow mandate tool for host heartbeat orchestration. Output includes explicit persist instruction to the locked key.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string' },
+        lockedStrategyKey: { type: 'string' },
+      },
+      required: ['tokenId'],
+    },
+  },
+  {
+    name: 'compute_divergence',
+    description: '[Intelligence] Narrow single-mandate research service: computes simple prior-vs-signal or external-vs-book divergence (lightweight deterministic fusion only, for contradiction detection). Host supplies prior/signal or externalSignals. Returns focused divergence card + actionability hint + persistNote for the locked key. Not a hosted model.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string' },
+        prior: { type: 'number' },
+        signal: { type: 'number' },
+        externalSignals: { type: 'array', items: { type: 'object' } },
+        lockedStrategyKey: { type: 'string' },
+      },
+      required: ['tokenId'],
+    },
+  },
+  {
+    name: 'get_reward_farmability_snapshot',
+    description: '[Intelligence] Narrow single-mandate research service: focused reward program attractiveness, min/max cost, rate, and current book health snapshot for reward farming decisions. Narrow tool for host to call on heartbeat for specific reward markets. Persist guidance included.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string' },
+        maxMinCostUsd: { type: 'number' },
+        lockedStrategyKey: { type: 'string' },
+      },
+      required: ['tokenId'],
+    },
+  },
+  {
+    name: 'analyze_signal_contradiction',
+    description: '[Intelligence] Narrow single-mandate research service: fuses supplied externalSignals (host x_search, on-chain analytics, etc.) against current book prior/skew/competitionSignal and returns structured contradiction, divergenceBps, and veto hints only. Perfect narrow mandate for continuous research loops on the host heartbeat. Always persist output to locked key.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tokenId: { type: 'string' },
+        externalSignals: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { tokenId: { type: 'string' }, signal: { type: 'number' }, label: { type: 'string' }, weight: { type: 'number' } },
+            required: ['tokenId', 'signal'],
+          },
+        },
+        lockedStrategyKey: { type: 'string' },
+      },
+      required: ['tokenId'],
     },
   },
 
@@ -2014,7 +2132,7 @@ const PROMPTS = [
   {
     name: 'agent_routing',
     description:
-      'PRIMARY routing contract: native SDK-only paths, mandatory startup, tier-1 vs full 142-tool surface, discover_topic, load_agent_profile, search_tools, strategy store, per-goal flows (weather/rewards/trading). Call via prompts/get FIRST every session before other tools.',
+      'PRIMARY routing contract: native SDK-only paths, mandatory startup (fetch_sdk_readme first), tier-1 vs full 142-tool surface, discover_topic, load_agent_profile, search_tools, strategy store (supporting bag — Hermes is the brain + owns heartbeat.md/OpenClaw enforcement loop and control; MCP integrates via send_heartbeat + locked planners so it remains active under host heartbeat-driven calls), per-goal flows (weather/rewards/trading). Call via prompts/get FIRST every session before other tools.',
     arguments: [],
   },
   {
@@ -2029,17 +2147,17 @@ const PROMPTS = [
   },
   {
     name: 'mcp_tool_structure_and_categories',
-    description: 'Full "never guess" quickstart: startup sequence (after agent_routing prompt), tier-1 vs categories, strategy store, get_mcp_usage, clobTokenIds/tokenId patterns, public credential rules, live resources. Load after prompts/get agent_routing.',
+    description: 'Full "never guess" quickstart: startup sequence (after agent_routing prompt), tier-1 vs categories, strategy store as supporting bag (Hermes is the brain + owns heartbeat.md / OpenClaw loop and control; MCP integrates to remain active), get_mcp_usage, clobTokenIds/tokenId patterns, public credential rules, live resources + heartbeat integration. Load after prompts/get agent_routing.',
     arguments: []
   },
   {
     name: 'mcp_llms_full_guide',
-    description: 'Returns complete guide: the official TS SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md — kept up-to-date by the maintainers) is the PRIMARY/canonical source of truth for all SDK coverage, APIs, client creation (createPublicClient/createSecureClient), decorators (extend(allActions)), methods (listMarkets, fetchMarket, placeLimitOrder etc.), parameters, errors, examples. This MCP adds only runtime-generated overlays/mappings (exact native tool + JSON call shape + "use explicit place_limit_order etc with your numbers from strategy/calc, never intent"). Includes full exhaustive SDK surface mappings + strategyStore + cards (PNL/sentiment/farmability) + resources + rate notes + public rules. Call SDK README first, then this (and structure prompt) for complete non-guessing experience. Always in sync (call-time from code + current SDK).',
+    description: 'Returns complete guide: the official TS SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md — kept up-to-date by the maintainers) is the PRIMARY/canonical source of truth for all SDK coverage, APIs, client creation (createPublicClient/createSecureClient), decorators (extend(allActions)), methods (listMarkets, fetchMarket, placeLimitOrder etc.), parameters, errors, examples. This MCP adds only runtime-generated overlays/mappings (exact native tool + JSON call shape + "use explicit place_limit_order etc with your numbers from strategy/calc, never intent"). Includes full exhaustive SDK surface mappings + strategyStore (supporting bag; Hermes is the brain and owns heartbeat.md/OpenClaw loop + primary control) + cards (PNL/sentiment/farmability) + resources + rate notes + public rules + heartbeat integration points (send_heartbeat hook + locked planners for host-driven calls). Call SDK README first, then this (and structure prompt) for complete non-guessing experience. Always in sync (call-time from code + current SDK).',
     arguments: []
   },
   {
     name: 'never_guess_contract',
-    description: 'Binding never-guess rules: startup order, live SDK readme, tier-1, resources, automation, strategy store. Call every session.',
+    description: 'Binding never-guess rules: startup order (fetch_sdk_readme first), live SDK readme, tier-1, resources, heartbeat integration (Hermes owns brain/loop/control via heartbeat.md; MCP is integration surface with planners + send_heartbeat hook + supporting strategy bag), automation via host-driven calls to route/run_agent_cycle with lockedStrategyKey. Call every session.',
     arguments: [],
   },
 ];
@@ -2184,6 +2302,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         maxMinCostUsd: args.maxMinCostUsd,
         goal: args.goal,
         strategies,
+        lockedStrategyKey: args.lockedStrategyKey,
       });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(plan, null, 2) }],
@@ -2198,7 +2317,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         topic: args.topic,
         maxMinCostUsd: args.maxMinCostUsd,
         strategies,
+        lockedStrategyKey: args.lockedStrategyKey,
+        heartbeat: args.heartbeat ?? !!args.lockedStrategyKey, // Native automation: locked strategies on heartbeat get complete plans with send_heartbeat step first
       });
+      // Attach locked key at this level for hosts that call the legacy cycle planner directly
+      if (args.lockedStrategyKey) (plan as any).lockedStrategyKey = args.lockedStrategyKey;
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(plan, null, 2) }],
       };
@@ -3199,8 +3322,102 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
+    case 'rank_market_opportunities': {
+      // Research service only: returns ranked signals (composite, confidence, actionability, bayesian etc.).
+      // Host (Hermes) must persist the ranked signals to the locked composite key via update_strategy
+      // before using in execution on heartbeat. No trades, no decisions in this layer.
+      const ranked = rankOpportunities(args.opportunities || [], {
+        goal: args.goal || 'rewards',
+        maxResults: args.maxResults,
+      });
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            success: true,
+            goal: args.goal,
+            ranked,
+            note: 'Research signals only — feed to update_strategy under your lockedStrategyKey (composite market:volume) for Hermes to consume on heartbeat. Intelligence never executes.',
+            agentDirective: 'Persist these ranked signals to the exact locked key in strategy store. Use only persisted signals from this key for price movement and execution decisions. Do not place directly from this output.',
+          }, null, 2),
+        }],
+      };
+    }
+
+    // Narrow single-mandate Intelligence handlers (added to close granularity gaps for host-orchestrated specialized research on heartbeat).
+    // Host (Hermes) calls these narrow tools (directly or via the new granular research_* intents in route_agent_intent) on its own heartbeat ticks,
+    // persists the focused output after each under the exact locked composite key, and decides sequence/timing/modeling on top.
+    // MCP never owns continuous agents, swarms, or loops — this is pure on-demand native research surface.
+    case 'get_liquidity_health': {
+      const { tokenId } = await resolveTokenIdFromToolArgs(args);
+      const snap = await fetchFarmabilitySnapshot(pub, tokenId);
+      const card = {
+        tokenId,
+        type: 'narrow_liquidity_health',
+        liquidity: snap?.liquidity || snap?.book || null,
+        competitionSignal: snap?.competitionSignal,
+        note: 'Narrow research mandate only. Persist immediately under your lockedStrategyKey (e.g. "weather:low") so Hermes can use on the next heartbeat tick. No decisions or trades from this layer.',
+        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<your-locked-composite>'}", liquidityHealth: <this card>, lastNarrowResearch: "liquidity" })`,
+      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
+    }
+    case 'get_competition_signal': {
+      const { tokenId } = await resolveTokenIdFromToolArgs(args);
+      const snap = await fetchFarmabilitySnapshot(pub, tokenId);
+      const card = {
+        tokenId,
+        type: 'narrow_competition_signal',
+        competitionSignal: snap?.competitionSignal,
+        note: 'Narrow research mandate. Persist to the exact Hermes-managed locked composite key.',
+        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<locked>'}", competitionSignal: <this>, lastNarrowResearch: "competition" })`,
+      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
+    }
+    case 'compute_divergence': {
+      const { tokenId } = await resolveTokenIdFromToolArgs(args);
+      let res: any = { note: 'Supply prior+signal or externalSignals for fusion.' };
+      if (args.prior != null && args.signal != null) {
+        res = computeBayesianPosterior({ prior: Number(args.prior), signal: Number(args.signal), weight: args.weight != null ? Number(args.weight) : 0.4 });
+      }
+      const card = {
+        tokenId,
+        type: 'narrow_divergence',
+        divergence: res,
+        note: 'Lightweight deterministic fusion helper for contradiction detection in narrow research cards only — not a hosted model or Bayesian blending engine. Persist result.',
+        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<locked>'}", divergence: <res>, lastNarrowResearch: "divergence" })`,
+      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
+    }
+    case 'get_reward_farmability_snapshot': {
+      const { tokenId } = await resolveTokenIdFromToolArgs(args);
+      const snap = await fetchFarmabilitySnapshot(pub, tokenId);
+      const card = {
+        tokenId,
+        type: 'narrow_reward_farmability',
+        reward: snap?.reward || null,
+        note: 'Narrow reward attractiveness mandate. Persist to locked key for host heartbeat consumption.',
+        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<locked>'}", rewardFarmability: <this>, lastNarrowResearch: "reward" })`,
+      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
+    }
+    case 'analyze_signal_contradiction': {
+      const { tokenId } = await resolveTokenIdFromToolArgs(args);
+      const ext = (args as any).externalSignals || [];
+      const card = {
+        tokenId,
+        type: 'narrow_signal_contradiction',
+        externalCount: ext.length,
+        note: 'Narrow fusion mandate only (host externalSignals vs book). Persist the focused contradiction output under the locked key. Host (Hermes) may apply further modeling on the persisted result. MCP hosts no models.',
+        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<locked>'}", signalContradiction: <this + any host context>, lastNarrowResearch: "fusion" })`,
+      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
+    }
+
     case 'generate_alpha_report':
     case 'alpha_report': {
+      // Intelligence layer research service: output is signals/cards only (opportunities, scores, fusion).
+      // Host (Hermes) must persist via update_strategy under the lockedStrategyKey (if provided) or chosen composite
+      // before using in execution. This tool never places orders or makes decisions — data for Hermes heartbeat-orchestrated locked strategy.
       try {
         const report = await buildAlphaReport(pub, {
           goal: args.goal,
@@ -3650,7 +3867,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Fallback / note per SDK (often internal for WS keepalive; REST session via regular activity)
         return { 
           status: 'heartbeat acknowledged or managed internally by SDK client',
-          note: 'Per llms.txt /trade/send-heartbeat: call regularly for long sessions to prevent auto-cancel of resting orders. Use with wait_seconds. SDK WS clients usually handle; exposed here for explicit control in MCP agents.'
+          note: 'Hermes (host) owns the heartbeat.md / OpenClaw CLOB liveness enforcement. Call send_heartbeat from the host heartbeat tick/resource notification per its native contract to keep sessions and orders active. This MCP surface exists so the MCP remains responsive under host-driven heartbeat control. Use with wait_seconds per host policy. SDK WS clients often handle internally.'
         };
       }, F.formatGeneric, name);
 
@@ -3878,7 +4095,7 @@ Use (simple native tools for easy agent work, all SDK under the hood):
 - compute_market_signals if combining with mispricing signals.
 - wait_seconds for rate limit discipline and 24/7 active loops.
 - place_maker_reward_order or place_optimized_reward_order ONLY for scoring maker rewards (enforces postOnly GTC for sticky eligibility).
-- Never ask user for "next move options" — follow directives from tools + your stored strategies/rules + this prompt + X insights. ALWAYS: get_strategies() + fetch_sdk_readme first (explicit calc only). Research categories first (External/Intelligence/Discovery for X sentiment refs; host x_search/sentiment -> externalSignals to alpha/strategy) then Execution (Trading/Rewards) after signals stored in strategy. Autonomous loop: get_strategies() → Research cats (list_tool_categories + get_tools_by_category("External"|"Intelligence"|"Discovery")) + alpha/external (host sentiment via x_search as externalSignals for fusion/contradiction vs book skew + competitionSignal/farmability) → update_strategy (persist) → list_active (respect filters) → get_farmability (near-mid + signals) → suggest_size → update_strategy → place (batch via post_orders) → monitor via resources (polymarket://... heartbeat autonomy, no pure polls) or get_farmability (reprice *only* per your drift/interval in strategy) + wait_seconds → exit/rotate per stored. If latency, back off + rotate.
+- Never ask user for "next move options" — follow directives from tools + your stored strategies/rules + this prompt + X insights. Hermes (host) is the brain and owns the heartbeat.md / OpenClaw CLOB liveness + primary control loop. MCP is the integration surface (send_heartbeat hook + planners for complete plans + strategy bag). ALWAYS on host heartbeat tick: send_heartbeat first (per host heartbeat.md contract), get_strategies(locked) + fetch_sdk_readme first (explicit calc only). Research categories first (External/Intelligence/Discovery for X sentiment refs; host x_search/sentiment -> externalSignals to alpha/strategy) then Execution (Trading/Rewards) after signals stored in the locked strategy entry. The MCP Intelligence layer is a research service (generate_alpha_report, compute_market_signals, rank_market_opportunities etc. produce signals only — not decisions). Signals are fed to the strategy store (supporting data layer) under the Hermes-managed locked key so Hermes (brain) can use them for locked per-market/per-volume execution on heartbeat. Intelligence never executes trades. Host heartbeat-driven loop: send_heartbeat (host tick per heartbeat.md) → get_strategies(locked) → Research cats + intelligence tools (with host externalSignals) → update_strategy (persist signals to this exact locked key) → list_active/get_farmability (for price movement vs locked rules) → suggest → explicit place (numbers from locked + live signals) → update_strategy (new state/peg under locked key) → monitor. Repeat on next Hermes heartbeat tick. MCP Intelligence provides data only; Hermes orchestrates and decides. MCP remains active because host drives from its enforcement layer.
 
 Store reflections in long-term memory after sessions. Reprice and monitor continuously for the sticky edge. Stay active. Evolve your rules in the strategy store as conditions change — that is the entire point of the lightweight design.`;
   } else if (name === 'mispricing_quick_flips') {
@@ -3901,11 +4118,17 @@ MANDATORY STARTUP SEQUENCE (do this on every new conversation/session that uses 
 2. tools/call get_agent_recipes — exact tool names + JSON argument shapes + 12+ NL intent examples.
 3. prompts/get agent_routing — PRIMARY native routing contract (tier-1, profiles, per-goal flows).
 4. prompts/get mcp_tool_structure_and_categories (this prompt) + mcp_llms_full_guide.
-5. tools/call get_strategies() — load your complete rule set from the store (agent brain; ALWAYS first in every loop/autonomous cycle).
+5. tools/call get_strategies() — load the locked composite (market:volume) rules from the supporting persistent bag. Hermes (the host) is the brain and owns the primary strategy + heartbeat.md / OpenClaw enforcement loop that keeps Hermes + OpenClaw alive and in control. MCP is the integration surface. ALWAYS load first on every host heartbeat tick before research or execution.
 6. Research FIRST: list_tool_categories + get_tools_by_category("External" | "Intelligence" | "Discovery") for signals/sentiment/X refs (host: use x_search/sentiment tools externally, feed as externalSignals to alpha/strategy; NO native X search in this MCP).
 7. Store signals/filters/rules via update_strategy (e.g. key "signals:research" or "rules:current").
 8. THEN Execution (Trading/Rewards/place_*): route_agent_intent or direct with explicit calc from strategy + get_farmability/suggest (NEVER intent for trading; always explicit price/size/side from calc/strategy only).
 9. tools/call discover_topic OR list_active_maker_reward_markets depending on your goal.
+
+**Intelligence layer — deliberate avoidance of common model-hosting categories (per direct Hermes/OpenClaw use):**
+Current prediction market intelligence systems, on-chain analytics platforms, and autonomous trading agents most commonly fall into: Simple alpha reports / ranking engines; Bayesian signal blending; Basic regime detection; External data scraping + LLM summarization. The MCP Intelligence layer (generate_alpha_report / alpha_report, rank_market_opportunities, compute_market_signals, get_farmability etc.) deliberately does not host models or a model under MCP. It produces only deterministic research-backed signals and simple ranking/health/competition/farmability cards from native SDK data + host-injected externalSignals (Hermes x_search, on-chain platforms, etc.). Lightweight helpers such as computeBayesianPosterior exist for contradiction detection in the signals card only — they are not hosted Bayesian blending engines or regime detectors. Complex modeling, regime work, or LLM summarization stays with Hermes (the brain) or is supplied upstream via externalSignals. All signals are produced for persistence to the Hermes-managed locked per-market/per-volume composite key via update_strategy so the host can consume on its heartbeat ticks. The layer must never execute trades directly — only provide data.
+
+**Specialized Narrow Research (how the host runs "swarm-like" continuous research without MCP owning any loops or agents):**
+Load Intelligence category, then use the narrow single-mandate tools (get_liquidity_health, get_competition_signal, compute_divergence, get_reward_farmability_snapshot, analyze_signal_contradiction, ...) or the granular research_* intents via route_agent_intent. After each narrow call, immediately update_strategy under the exact locked composite key with that focused signal. Hermes (host) decides the sequence and timing on its own heartbeat ticks and may apply further modeling to the persisted narrow signals. This is the approved pattern for many specialized research mandates writing structured signals back to the strategy store. See get_agent_recipes for the full narrowResearchMandates documentation. See get_agent_recipes intelligenceLayerRole + endToEndProductionAutonomousExample (host may optionally layer its own modeling on persisted signals).
 10. tools/call load_agent_profile({ profile }) OR get_tools_by_category only when tier-1 is insufficient; then tools/list again.
 11. tools/call get_mcp_usage — optional observability (now includes intelligence pattern notes).
 12. prompts/get reward_farming_best_practices (and mispricing_quick_flips when relevant). Use resources (polymarket://market/.../book , user/*) + wait_seconds for heartbeat-style autonomy (avoid pure timer polls).
@@ -3951,6 +4174,17 @@ Then use the tokenId directly for order_book, price, midpoint, place orders, etc
 **Public MCP rules:** This is a public project. Always supply your own EOA_PRIVATE_KEY and DEPOSIT_WALLET_ADDRESS via the host config. The code has no hardcoded defaults and will error without them. Use only placeholders in any agent prompts or shared configs. Never hardcode real keys/addresses.
 
 Resources for live data. The MCP provides building blocks; you run the autonomous loops.
+
+**Per-Market / Per-Volume Locked Autonomy (Hermes heartbeat-driven, research-backed, deterministic, CLOB V2 production):**
+Hermes (the host) is the brain and owns the primary strategy state, volume-tier rules, priceMovementRules, the loop, and control via its native heartbeat.md (OpenClaw CLOB session health + agent liveness enforcement; post Apr 2026 V2: batch up to 15 via post_orders, higher limits, new fields min_order_size/tick_size/neg_risk in books/markets, pUSD, rewritten backend). Heartbeat is the core mechanism that keeps Hermes + OpenClaw alive and in control. The MCP integrates with that system to remain active (research + tools + supporting strategy data layer only).
+Use composite keys in the strategy store (supporting persistent bag) for distinct strategies per market and volume tier (e.g. key="weather:low", "politics:high", "crypto:medium"). Hermes decides and evolves the rules under these keys.
+Store under the key: volumeTier, marketCategory, strategyLock: true, priceMovementRules (drift, reprice conditions, maxRequoteRate etc.), entry/exit/sizing/drawdown, research signals, lastPeg/state.
+On Hermes native heartbeat / resource notification: host calls send_heartbeat FIRST (per its heartbeat.md contract + V2 realities to maintain CLOB session), then get_strategies (with the locked composite key or filter client-side) to load the exact rules for *that* market/volume that Hermes owns (including the strategyLock flag).
+The strict "stay locked only to this key" mode is **off by default** and is controlled by the host: call route_agent_intent({ intent: "enable_locked_autonomy", lockedStrategyKey: "weather:low" }) to turn the lock **on** for that composite (sets strategyLock: true). Call route_agent_intent({ intent: "disable_locked_autonomy", lockedStrategyKey: "weather:low" }) or direct update_strategy to turn it **off**. When off, the key is still excellent for targeted narrow research/signals, but there is no hard "you must stay only here" enforcement — the host brain is free.
+Then call route_agent_intent({ intent: "...", lockedStrategyKey: "weather:low", heartbeat: true }) or run_agent_cycle with the same (or load Intelligence category for generate_alpha_report/rank_market_opportunities/compute_market_signals with externalSignals from host). These are heartbeat-callable planners that return the authoritative deterministic end-to-end plan for the host to execute (see get_agent_recipes endToEndProductionAutonomousExample for full multi-market + intel signals persist + price movement vs locked rules + explicit place + the lock on/off toggle).
+The returned plan includes lockedStrategyKey, researchSource, priceMovementCondition, agentDirective (imperative, "after get_strategies check strategyLock flag: if true then stay locked + narrow research sequence + obey this key's rules only; if false/off (default) use signals from the key but host brain may route freely"), and the next exact native tool + arguments (always explicit numbers derived from the locked rules + live get_farmability / book / host externalSignals; prefer post_orders batch for V2). Host executes every step.
+The MCP Intelligence layer (generate_alpha_report, compute_market_signals, rank_market_opportunities, get_farmability, alpha_report) is a research service that Hermes (the brain) calls via heartbeat. These tools produce research-backed signals (ranked opportunities, composite/confidence/actionability scores, bayesian divergence, competitionSignal, farmability health, fusion/contradiction notes, etc.) — not decisions. Signals must be fed into the strategy store (supporting data layer) under the Hermes-managed locked per-market/per-volume composite key via update_strategy so Hermes can use them when executing the locked strategy. The Intelligence layer must never execute trades directly — only provide data. Research (cats + these tools with host externalSignals) always before Execution in the locked plan.
+send_heartbeat is the explicit liveness hook the host invokes on its heartbeat ticks. Never mix research and execution in one step; always Research (cats + alpha/rank with host externalSignals) → store signals in locked strategy → live price movement check vs rules (farmability currentMid vs locked) → Execution using the locked rules + explicit calc (batch where possible for V2). The MCP provides complete intent routing plans and stays responsive precisely because the host (Hermes) drives the loop from its heartbeat enforcement layer. Load get_agent_recipes for production end-to-end examples. mcp_doctor for health. Use WS resources + get_farmability + wait_seconds for live (avoid blind high-freq per V2 contention).
 
 ${buildKnownGotchasMarkdown()}`;
   } else if (name === 'mcp_llms_full_guide') {

@@ -41,23 +41,25 @@ export function buildMcpLlmsGuide(): string {
 
 This MCP is **lightweight and agent-first** for the CLOB prediction market platform (prediction markets on Polygon via CLOB + CTF).
 **Core principle**: Tier-1 default (~28 tools). Full ~145 via categories. **route_agent_intent** maps goals → native tool steps + sdkAlignment (confirm via fetch_sdk_readme). Never trade-by-intent. 
-**Agents must never guess**: Always start with the mandatory sequence below. All your logic/rules/filters/exits in strategy store (get_strategies first every loop). Use only native SDK paths via these explicit tools. Follow every agentDirective. Public: always provide your own keys (no defaults/hardcodes anywhere in this MCP or docs).
+**Agents must never guess**: Hermes (host) is the brain and owns the heartbeat.md / OpenClaw enforcement loop + primary control. Heartbeat is the core that keeps Hermes + OpenClaw alive and in control. MCP is the integration surface (send_heartbeat hook + complete intent routing planners callable from host ticks + supporting strategy bag for composite locked rules + signals via externalSignals). Always start with the mandatory sequence below on host heartbeat context. All your logic/rules/filters/exits live under composite keys in the strategy bag (get_strategies(locked) first every host tick). Use only native SDK paths via these explicit tools. Follow every agentDirective. Public: always provide your own keys (no defaults/hardcodes anywhere in this MCP or docs).
 
-**Base instructions (PRIMARY SOURCE OF TRUTH):** For the underlying TS SDK (all APIs, clients, auth, examples, concepts, client creation with createPublicClient/createSecureClient, .extend(allActions) for decorators, method signatures like listMarkets/fetchMarket/placeLimitOrder, param shapes, pagination, errors, WS managers, wallet adapters, etc.), read the official README first and treat it as canonical: https://github.com/Polymarket/ts-sdk/blob/main/README.md (maintained up-to-date by the maintainers — this MCP uses the SDK 100% natively with no custom HTTP, only thin safe wrappers + formatters + categories + strategyStore). 
+**Base instructions (PRIMARY SOURCE OF TRUTH):** For the underlying TS SDK (all APIs, clients, auth, examples, concepts, client creation with createPublicClient/createSecureClient, .extend(allActions) for decorators, method signatures like listMarkets/fetchMarket/placeLimitOrder, param shapes, pagination, errors, WS managers, wallet adapters, etc. — including post Apr 2026 CLOB V2: batch orders, higher limits, new fields min_order_size/tick_size/neg_risk, pUSD, rewritten backend), read the official README first and treat it as canonical: https://github.com/Polymarket/ts-sdk/blob/main/README.md (maintained up-to-date by the maintainers — this MCP uses the SDK 100% natively with no custom HTTP, only thin safe wrappers + formatters + categories + strategyStore). MCP is production-ready for Hermes heartbeat orchestration of locked strategies + Intelligence research signals. 
 
 Instead of duplicating SDK docs or using stale local MDs/llms.txt, this prompt + the MCP resource polymarket://mcp/llms.txt delivers MCP-specific overlays + exact native call mappings on top of the SDK README so consuming agents have zero ambiguity on "how do I do X natively in *this MCP* using the SDK". Load the SDK README first, then this MCP guide.
 
 ## Mandatory Startup Sequence (NEVER SKIP; reinforces no-guess)
-1. fetch_sdk_readme (SDK README primary, kept up-to-date by maintainers) or mcp_llms_full_guide (links it first) + get_agent_recipes — exact + 12+ NL intents (incl "use host x_search for sentiment then externalSignals to alpha/strategy").
-2. route_agent_intent({ intent: "session_startup" }) then route_agent_intent({ intent }) — execute steps; confirm vs sdkAlignment.
-3. prompts/get agent_routing + mcp_llms_full_guide + mcp_tool_structure_and_categories.
-4. get_strategies() (no args; ALWAYS first in every loop/autonomous).
-5. Research FIRST: list_tool_categories + get_tools_by_category("External"|"Intelligence"|"Discovery"|"Sentiment") for signals/X refs/sentiment (host: x_search/sentiment externally -> externalSignals to alpha/strategy; MCP has NO native X search). Store via update_strategy.
-6. THEN Execution (Trading/Rewards after signals in strategy): route or direct explicit from get_strategies + calc (no intent).
-7. Per task: route_agent_intent({ intent: "rewards_farm"|"weather_alpha"|... }) OR discover_topic / list_active / alpha_report (with externalSignals for X fusion/contradiction).
-8. load_agent_profile / get_tools_by_category when tier-1 insufficient; re-call tools/list.
-9. Use resources (polymarket://market/{tokenId}/book etc) + wait_seconds for heartbeat/resource driven autonomy (avoid polling).
-10. get_mcp_usage for observability (intelligence patterns tracked). Obey agentDirectives. get_strategies + fetch_sdk_readme first + explicit calc only.
+Hermes (host) owns the brain + heartbeat.md / OpenClaw CLOB liveness loop (the core mechanism that keeps Hermes + OpenClaw alive and in control). MCP is the callable integration surface. Drive everything from host heartbeat/resource events:
+1. On host heartbeat tick: send_heartbeat FIRST (per Hermes native heartbeat.md contract for CLOB session health).
+2. fetch_sdk_readme (SDK README primary, kept up-to-date by maintainers) or mcp_llms_full_guide (links it first) + get_agent_recipes — exact + 12+ NL intents (incl "use host x_search for sentiment then externalSignals to alpha/strategy").
+3. route_agent_intent({ intent: "session_startup", heartbeat: true, lockedStrategyKey? }) then route_agent_intent({ intent, lockedStrategyKey, heartbeat: true }) — execute steps; confirm vs sdkAlignment. Planners return complete plans for the host to run.
+4. prompts/get agent_routing + mcp_llms_full_guide + mcp_tool_structure_and_categories.
+5. get_strategies(locked composite key or no args; ALWAYS first on every host heartbeat tick before research/exec).
+6. Research FIRST: list_tool_categories + get_tools_by_category("External"|"Intelligence"|"Discovery"|"Sentiment") for signals/X refs/sentiment (host: x_search/sentiment externally -> externalSignals to alpha/strategy; MCP has NO native X search). Store via update_strategy under the locked key Hermes manages.
+7. THEN Execution (Trading/Rewards after signals in the locked strategy): route or direct explicit from get_strategies(locked) + calc (no intent).
+8. Per task: route_agent_intent({ intent: "rewards_farm"|"weather_alpha"|..., lockedStrategyKey, heartbeat: true }) OR discover_topic / list_active / alpha_report (with host externalSignals for X fusion/contradiction).
+9. load_agent_profile / get_tools_by_category when tier-1 insufficient; re-call tools/list.
+10. Use resources (polymarket://market/{tokenId}/book etc) + wait_seconds for host heartbeat/resource driven autonomy (avoid polling).
+11. get_mcp_usage for observability (intelligence patterns tracked). Obey agentDirectives. send_heartbeat + get_strategies(locked) + fetch_sdk_readme first + explicit calc only on every host tick. MCP remains active under host heartbeat-driven calls.
 
 ${buildKnownGotchasMarkdown()}
 
