@@ -24,7 +24,7 @@ You **MUST** execute these steps in order using your tools:
 
 1. Read this entire `AGENTS.md`.
 2. Read `README.md` (full).
-3. Read `MCP_SERVER_OVERVIEW.md` (full).
+3. Read `MCP_SERVER_OVERVIEW.md` (if present; legacy — the primary contract for agents is native `fetch_sdk_readme` + `prompts/get` for `agent_routing`/`mcp_llms_full_guide`/`mcp_tool_structure_and_categories`/`never_guess_contract` + `get_agent_recipes` + this AGENTS.md + live resources like polymarket://mcp/llms.txt; MCP will not and must not host stale .MDs).
 4. Use the `read_file` tool (with limits) to thoroughly read **src/mcp.ts** — it is the heart of everything:
    - Start with lines 1-100 (imports, strategyStore, client setup).
    - Read the category system: `listAllCategories`, `getToolsByCategory`, `list_tool_categories`, `get_tools_by_category` (search for these).
@@ -169,15 +169,18 @@ This section (plus the reload note above) is now part of the mandatory memory. U
 **This section is the primary reference for LLMs/agents using the MCP at runtime.** Load or include this (or the equivalent `mcp_tool_structure_and_categories` prompt) in your context. The goal is **zero guessing**.
 
 ### Mandatory Startup for Every Session (Never Skip)
-1. SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md) — base SDK instructions.
-2. `tools/call get_agent_recipes` — exact tool names + JSON argument shapes.
+1. SDK README (https://github.com/Polymarket/ts-sdk/blob/main/README.md) — base SDK instructions (call fetch_sdk_readme or via mcp_llms_full_guide first).
+2. `tools/call get_agent_recipes` — exact tool names + JSON argument shapes + 12+ NL query support (e.g. "use host x_search for sentiment then externalSignals to alpha/strategy").
 3. `prompts/get agent_routing` — primary routing contract (tier-1, profiles, goal flows).
 4. `prompts/get mcp_llms_full_guide` + `mcp_tool_structure_and_categories`; add `reward_farming_best_practices` / `mispricing_quick_flips` if relevant.
-5. `get_strategies()` — load persisted rules from the strategy store (agent brain).
-6. Goal discovery: `discover_topic({ topic: "weather"|"sports"|... })` **or** `list_active_maker_reward_markets` for rewards farming. Prefer `discover_topic` over bare `list_events`/`list_markets` with only `category` (mapped to SDK `tagSlug`/`tagId` in `src/data/discovery.ts`).
-7. `load_agent_profile({ profile: "weather"|"rewards"|"trading"|"full" })` or `get_tools_by_category` only when tier-1 is insufficient; **re-call `tools/list`** so the host sees new tools.
-8. `get_mcp_usage` for observability. Do not use `polymarket://markets` as a full catalog (first-page snapshot only).
-9. Every loop: `get_strategies()` first; obey `agentDirective`; use `wait_seconds`; explicit `place_limit_order` with your numbers (no intent). Optional: `polymarket://mcp/llms.txt` mirrors the live guide.
+5. `get_strategies()` — load persisted rules from the strategy store (agent brain). **ALWAYS first in every loop.**
+6. **Research categories FIRST (External/Intelligence/Discovery/Sentiment alias)**: `list_tool_categories` + `get_tools_by_category("External"|"Intelligence"|"Discovery")` (or "Sentiment") for signals/sentiment refs. Host: use x_search (or equiv) for topic sentiment/X, pass results as `externalSignals` array to `generate_alpha_report`/`compute_market_signals`/`update_strategy` (MCP has zero native X search). Fuse for contradiction (X sentiment vs book skew/competitionSignal from farmability).
+7. Store research/signals/filters in `update_strategy` (e.g. "signals:research", "rules:current"); obey Research cats before any Execution.
+8. **THEN Execution (Trading/Rewards after signals in strategy)**: `route_agent_intent` or direct `list_active...` / `place_*` with explicit numbers from `get_strategies()` + calc (never intent; always explicit place_limit_order etc with your numbers).
+9. Goal discovery: `discover_topic({ topic: "weather"|"sports"|... })` **or** `list_active_maker_reward_markets` for rewards farming. Prefer `discover_topic` over bare `list_events`/`list_markets` with only `category` (mapped to SDK `tagSlug`/`tagId` in `src/data/discovery.ts`).
+10. `load_agent_profile({ profile: "weather"|"rewards"|"trading"|"full" })` or `get_tools_by_category` only when tier-1 is insufficient; **re-call `tools/list`** so the host sees new tools.
+11. `get_mcp_usage` for observability (now tracks intelligence/alpha patterns + usage). Do not use `polymarket://markets` as a full catalog (first-page snapshot only).
+12. Every loop: `get_strategies()` first; obey `agentDirective`; use `wait_seconds`; explicit `place_limit_order` with your numbers (no intent). Use resources (`polymarket://market/{tokenId}/book`, `polymarket://user/*`) + wait for heartbeat/resource-driven autonomy (no pure timer/polling loops per X patterns). Optional: `polymarket://mcp/llms.txt` mirrors the live guide.
 
 **Exact call example (JSON-RPC style for the protocol):**
 ```json
@@ -292,11 +295,13 @@ Similar: use `list_markets` or `list_active...` for candidates, `get_farmability
 - **Rate discipline**: Use `wait_seconds({seconds: 5, reason: "after placement to respect limits"})` instead of tight loops.
 - **Never ask human**: Every tool response with `agentDirective` tells you the next autonomous step. Follow it. Use your stored strategies + prompts + directives.
 
-**Resources for live data**: Subscribe via the MCP resources protocol (not tools). Examples in `src/mcp/resources.ts` or by calling `list_resources`.
+**Resources for live data (heartbeat/autonomy pattern)**: Subscribe via the MCP resources protocol (not tools). Examples in `src/mcp/resources.ts` or by calling `list_resources`. Prefer over polling: `polymarket://market/{tokenId}/book` + `wait_seconds` for live signals in loops (X/heartbeat patterns for agents that stay productive in background).
+
+**Intelligence/External + X sentiment**: Use host x_search (or sentiment tools) for external signals; pass to alpha_report via `externalSignals` (enhanced for contradiction: X vs book skew tied to competitionSignal/farmability). Research (External/Intelligence/Discovery cats) first, persist to strategy, execute after. get_mcp_usage for usage/intel patterns.
 
 Always cross with the loaded prompts for current X insights and exact mappings.
 
-This + the three MCP prompts + `get_strategies()` first = you will never have to guess.
+This + the three MCP prompts + `get_strategies()` first + fetch_sdk_readme first + explicit calc only = you will never have to guess.
 
 ---
 
@@ -437,7 +442,9 @@ The MCP exists **only for agents** (LLMs/consuming systems). Agents must **never
 
 - `src/mcp.ts` — ...
 - `AGENTS.md` — re-read for all rules, especially public/no-hardcode, agent .MD guidance, research, native, no-tests.
-- Research targets: GitHub ts-sdk source + PRs, similar projects.
+- Research targets: GitHub ts-sdk source + PRs, similar projects (MCP explicitness, intent planners + rich recipes/directives, external brain like strategyStore, heartbeat/resources for autonomy, cross-source fusion/contradiction in alpha via host signals → externalSignals).
+
+**Legacy note**: MCP_SERVER_OVERVIEW.md (if ever present) is deprecated; agents and maintainers must use the native `fetch_sdk_readme` (or resource) + the three guidance prompts + `get_agent_recipes` + this AGENTS for the live, non-stale contract. Removal reinforces "MCP will not and must not host any stale .MD".
 
 **End of AGENTS.md**. Re-read this file at the start of every new task.
 

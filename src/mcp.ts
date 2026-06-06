@@ -2272,7 +2272,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             totalToolCalls: mcpUsageTracker.totalCalls,
             uniqueToolsUsed: mcpUsageTracker.toolCalls.size,
             perTool: perTool,
-            note: 'This tracks MCP surface usage (which tools agents call and how often). For platform account activities (trades, rebates, rewards usage etc.) use list_activity or the live polymarket://user/activity resource (powered by user WS). Logs also capture activity to logs/polymarket.log (file only in MCP mode).',
+            note: 'This tracks MCP surface usage (which tools agents call and how often). For platform account activities (trades, rebates, rewards usage etc.) use list_activity or the live polymarket://user/activity resource (powered by user WS). Logs also capture activity to logs/polymarket.log (file only in MCP mode). Intelligence patterns (alpha_report, externalSignals/X-sentiment fusion via host, contradiction checks, research-then-execution order) are observable here + in strategyStore + formatted cards (competitionSignal, contradictionBps). Call after research/alpha flows to monitor agent discipline.',
           }, null, 2)
         }]
       };
@@ -3878,7 +3878,7 @@ Use (simple native tools for easy agent work, all SDK under the hood):
 - compute_market_signals if combining with mispricing signals.
 - wait_seconds for rate limit discipline and 24/7 active loops.
 - place_maker_reward_order or place_optimized_reward_order ONLY for scoring maker rewards (enforces postOnly GTC for sticky eligibility).
-- Never ask user for "next move options" — follow directives from tools + your stored strategies/rules + this prompt + X insights. Autonomous loop: get_strategies() to load your rules (incl. your requote throttling policy for CLOB V2 place contention) → list_active (respect your filters) → get_farmability (near-mid + signals) → suggest_size → update_strategy (log results / tweak rules) → place (batch via post_orders if multi) → monitor via resources or get_farmability (reprice *only* per your drift/interval rules, with wait_seconds) → exit or rotate per your stored rules. If place latency spikes, back off rate immediately.
+- Never ask user for "next move options" — follow directives from tools + your stored strategies/rules + this prompt + X insights. ALWAYS: get_strategies() + fetch_sdk_readme first (explicit calc only). Research categories first (External/Intelligence/Discovery for X sentiment refs; host x_search/sentiment -> externalSignals to alpha/strategy) then Execution (Trading/Rewards) after signals stored in strategy. Autonomous loop: get_strategies() → Research cats (list_tool_categories + get_tools_by_category("External"|"Intelligence"|"Discovery")) + alpha/external (host sentiment via x_search as externalSignals for fusion/contradiction vs book skew + competitionSignal/farmability) → update_strategy (persist) → list_active (respect filters) → get_farmability (near-mid + signals) → suggest_size → update_strategy → place (batch via post_orders) → monitor via resources (polymarket://... heartbeat autonomy, no pure polls) or get_farmability (reprice *only* per your drift/interval in strategy) + wait_seconds → exit/rotate per stored. If latency, back off + rotate.
 
 Store reflections in long-term memory after sessions. Reprice and monitor continuously for the sticky edge. Stay active. Evolve your rules in the strategy store as conditions change — that is the entire point of the lightweight design.`;
   } else if (name === 'mispricing_quick_flips') {
@@ -3891,22 +3891,26 @@ Store reflections in long-term memory after sessions. Reprice and monitor contin
 6. Store plan + any filters/rules in set_strategy / update_strategy (use for liquidity filters, event prefs, your own "best" logic too). Monitor with watch_order_until_filled + resources.
 7. Exit rules: wide spread, low activity, or better opportunity appears (re-scan). Load your current rules with get_strategies() (no args).
 
-Always cross with reward_farming_best_practices if the market also qualifies for maker rewards. Use categories + wait_seconds for discipline. Never ask user for options.`;
+Always cross with reward_farming_best_practices if the market also qualifies for maker rewards. Research (External/Intelligence/Discovery cats + host x_search sentiment as externalSignals) first; store in strategy; explicit calc only for place. Use resources + wait_seconds (heartbeat) for autonomy. get_strategies() first every loop. Never ask user for options.`;
   } else if (name === 'mcp_tool_structure_and_categories') {
     content = `AGENT INSTRUCTION — READ THIS FIRST AND NEVER GUESS:
 You are using a deliberately lightweight MCP. The MCP will NEVER expose a giant flat list of 100+ tools by default, and it will NEVER make you guess the right way to use it.
 
-MANDATORY STARTUP SEQUENCE (do this on every new conversation/session that uses this MCP):
-1. tools/call get_agent_recipes — exact tool names + JSON argument shapes.
-2. prompts/get agent_routing — PRIMARY native routing contract (tier-1, profiles, per-goal flows).
-3. prompts/get mcp_tool_structure_and_categories (this prompt) + mcp_llms_full_guide.
-4. tools/call get_strategies() — load your complete rule set from the store.
-5. tools/call discover_topic OR list_active_maker_reward_markets depending on your goal.
-6. tools/call load_agent_profile({ profile }) OR get_tools_by_category only when tier-1 is insufficient; then tools/list again.
-7. tools/call get_mcp_usage — optional observability.
-8. prompts/get reward_farming_best_practices (and mispricing_quick_flips when relevant).
+MANDATORY STARTUP SEQUENCE (do this on every new conversation/session that uses this MCP; NEVER GUESS):
+1. tools/call fetch_sdk_readme (or prompts/get mcp_llms_full_guide which links it first) — base SDK (kept up-to-date by maintainers).
+2. tools/call get_agent_recipes — exact tool names + JSON argument shapes + 12+ NL intent examples.
+3. prompts/get agent_routing — PRIMARY native routing contract (tier-1, profiles, per-goal flows).
+4. prompts/get mcp_tool_structure_and_categories (this prompt) + mcp_llms_full_guide.
+5. tools/call get_strategies() — load your complete rule set from the store (agent brain; ALWAYS first in every loop/autonomous cycle).
+6. Research FIRST: list_tool_categories + get_tools_by_category("External" | "Intelligence" | "Discovery") for signals/sentiment/X refs (host: use x_search/sentiment tools externally, feed as externalSignals to alpha/strategy; NO native X search in this MCP).
+7. Store signals/filters/rules via update_strategy (e.g. key "signals:research" or "rules:current").
+8. THEN Execution (Trading/Rewards/place_*): route_agent_intent or direct with explicit calc from strategy + get_farmability/suggest (NEVER intent for trading; always explicit price/size/side from calc/strategy only).
+9. tools/call discover_topic OR list_active_maker_reward_markets depending on your goal.
+10. tools/call load_agent_profile({ profile }) OR get_tools_by_category only when tier-1 is insufficient; then tools/list again.
+11. tools/call get_mcp_usage — optional observability (now includes intelligence pattern notes).
+12. prompts/get reward_farming_best_practices (and mispricing_quick_flips when relevant). Use resources (polymarket://market/.../book , user/*) + wait_seconds for heartbeat-style autonomy (avoid pure timer polls).
 
-After that, follow the directives in this prompt, the other prompts, and every tool response's agentDirective field.
+After that, follow the directives in this prompt, the other prompts, and every tool response's agentDirective field. get_strategies() + fetch_sdk_readme first + explicit calc only + Research cats before Execution in strategy. Host x_search for sentiment -> externalSignals to alpha/strategy/update.
 
 The MCP uses categories + a ~50 core set (expanded on-demand) to stay manageable while giving YOU (the agent) full power over every rule and filter, with full SDK surface reachable.
 

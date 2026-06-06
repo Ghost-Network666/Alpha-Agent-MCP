@@ -14,8 +14,8 @@ import { buildKnownGotchasMarkdown } from './agent-gotchas.js';
 
 export const MCP_CATEGORIES = [
   'Meta',       // Recipes, routing, SDK readme, cycle planner, categories
-  'Intelligence', // Deterministic signals + alpha report (no LLM in MCP; host reasons)
-  'External',   // Non-CLOB reference data (crypto spot, weather)
+  'Intelligence', // Deterministic signals + alpha report (no LLM in MCP; host reasons). Sentiment/contradiction/X fusion via externalSignals (host x_search); category "Sentiment" aliases here.
+  'External',   // Non-CLOB reference data (crypto spot, weather). Host sentiment sources feed here to alpha/strategy.
   'Rewards',
   'Strategy',
   'Account',
@@ -47,14 +47,17 @@ This MCP is **lightweight and agent-first** for the CLOB prediction market platf
 
 Instead of duplicating SDK docs or using stale local MDs/llms.txt, this prompt + the MCP resource polymarket://mcp/llms.txt delivers MCP-specific overlays + exact native call mappings on top of the SDK README so consuming agents have zero ambiguity on "how do I do X natively in *this MCP* using the SDK". Load the SDK README first, then this MCP guide.
 
-## Mandatory Startup Sequence (NEVER SKIP)
-1. get_agent_recipes — exact tool names + JSON args + intent registry.
-2. route_agent_intent({ intent: "session_startup" }) then route_agent_intent({ intent }) — execute steps; confirm SDK readme vs sdkAlignment.mcpToSdk.
+## Mandatory Startup Sequence (NEVER SKIP; reinforces no-guess)
+1. fetch_sdk_readme (SDK README primary, kept up-to-date by maintainers) or mcp_llms_full_guide (links it first) + get_agent_recipes — exact + 12+ NL intents (incl "use host x_search for sentiment then externalSignals to alpha/strategy").
+2. route_agent_intent({ intent: "session_startup" }) then route_agent_intent({ intent }) — execute steps; confirm vs sdkAlignment.
 3. prompts/get agent_routing + mcp_llms_full_guide + mcp_tool_structure_and_categories.
-4. get_strategies() (no args).
-5. Per task: route_agent_intent({ intent: "rewards_farm"|"weather_alpha"|... }) OR discover_topic / list_active / alpha_report.
-6. load_agent_profile / get_tools_by_category when tier-1 insufficient; re-call tools/list.
-7. Obey agentDirectives. Explicit price/size on place_* — never trading-by-intent.
+4. get_strategies() (no args; ALWAYS first in every loop/autonomous).
+5. Research FIRST: list_tool_categories + get_tools_by_category("External"|"Intelligence"|"Discovery"|"Sentiment") for signals/X refs/sentiment (host: x_search/sentiment externally -> externalSignals to alpha/strategy; MCP has NO native X search). Store via update_strategy.
+6. THEN Execution (Trading/Rewards after signals in strategy): route or direct explicit from get_strategies + calc (no intent).
+7. Per task: route_agent_intent({ intent: "rewards_farm"|"weather_alpha"|... }) OR discover_topic / list_active / alpha_report (with externalSignals for X fusion/contradiction).
+8. load_agent_profile / get_tools_by_category when tier-1 insufficient; re-call tools/list.
+9. Use resources (polymarket://market/{tokenId}/book etc) + wait_seconds for heartbeat/resource driven autonomy (avoid polling).
+10. get_mcp_usage for observability (intelligence patterns tracked). Obey agentDirectives. get_strategies + fetch_sdk_readme first + explicit calc only.
 
 ${buildKnownGotchasMarkdown()}
 

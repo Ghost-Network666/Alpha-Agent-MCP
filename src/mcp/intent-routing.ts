@@ -18,7 +18,13 @@ export type AgentIntent =
   | 'alpha_scan'
   | 'place_reward_maker'
   | 'place_limit_explicit'
-  | 'rotate_after_failure';
+  | 'rotate_after_failure'
+  | 'sentiment_alpha'
+  | 'x_sentiment_fusion'
+  | 'contradiction_check'
+  | 'research_first'
+  | 'signals_to_execution'
+  | 'resource_heartbeat';
 
 export type IntentRouteRequest = {
   intent: AgentIntent;
@@ -136,6 +142,35 @@ export const INTENT_REGISTRY: Record<
   rotate_after_failure: {
     summary: 'Pick different market after failed place',
     primaryTools: ['list_active_maker_reward_markets', 'generate_alpha_report'],
+  },
+  sentiment_alpha: {
+    summary: 'X/host sentiment signal to alpha/strategy (host does x_search; pass as externalSignals)',
+    profile: 'automation',
+    primaryTools: ['get_strategies', 'generate_alpha_report', 'update_strategy'],
+  },
+  x_sentiment_fusion: {
+    summary: 'Host X sentiment + externalSignals fusion into alpha then strategy (no native X in MCP)',
+    profile: 'automation',
+    primaryTools: ['get_strategies', 'generate_alpha_report', 'update_strategy'],
+  },
+  contradiction_check: {
+    summary: 'Detect X sentiment vs book skew/competitionSignal (via external + farmability in alpha)',
+    profile: 'automation',
+    primaryTools: ['get_strategies', 'generate_alpha_report', 'get_farmability'],
+  },
+  research_first: {
+    summary: 'Research categories (External/Intelligence/Discovery) first, store signals, then execution',
+    profile: 'discovery',
+    primaryTools: ['get_strategies', 'get_tools_by_category', 'generate_alpha_report', 'update_strategy'],
+  },
+  signals_to_execution: {
+    summary: 'Signals in strategy -> explicit place (after research cats)',
+    profile: 'trading',
+    primaryTools: ['get_strategies', 'fetch_market', 'place_limit_order'],
+  },
+  resource_heartbeat: {
+    summary: 'Use resources + wait/heartbeat patterns for autonomy (avoid polling)',
+    primaryTools: ['get_strategies', 'wait_seconds', 'list_open_orders'],
   },
 };
 
@@ -273,6 +308,29 @@ export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
       { goal: 'rewards', maxMinCostUsd: req.maxMinCostUsd ?? 10 },
       'Alternate pick — never retry same token blindly.'
     );
+  } else if (intent === 'sentiment_alpha' || intent === 'x_sentiment_fusion' || intent === 'contradiction_check') {
+    push('get_strategies', {}, 'Load rules first (incl externalSignals policy).');
+    push('generate_alpha_report', {
+      goal: req.goal || 'discovery',
+      topic: req.topic,
+      externalSignals: req.strategies?.externalSignals || [], // host: use your x_search/sentiment tool, populate [{tokenId, signal: <0-1 from X sentiment>, prior?, weight?, label:'x_sentiment'}]
+      maxCandidates: 6,
+    }, 'HOST: perform x_search (or equiv) for topic sentiment/contradiction vs book; feed results here as externalSignals then update_strategy. Ties to competitionSignal/farmability.');
+    push('update_strategy', { key: 'rules:current_sentiment', externalSignals: '<from host x + alpha>' }, 'Persist X sentiment signals to brain (strategy sacred).');
+  } else if (intent === 'research_first') {
+    push('get_strategies', {}, 'Rules first.');
+    push('list_tool_categories', {}, 'Discover Research cats (External/Intelligence/Discovery for signals/sentiment).');
+    push('get_tools_by_category', { category: 'External' }, 'Non-CLOB refs (crypto/weather).');
+    push('get_tools_by_category', { category: 'Intelligence' }, 'Alpha + signals (host sentiment -> externalSignals).');
+    push('get_tools_by_category', { category: 'Discovery' }, 'Topic scan.');
+    push('generate_alpha_report', { goal: req.goal || 'discovery', topic: req.topic, externalSignals: [] }, 'Research signals first.');
+    push('update_strategy', { key: 'signals:research', note: 'store before any Execution/Trading/Rewards' }, 'Persist research; obey: Research cats first, Execution after in strategy.');
+  } else if (intent === 'signals_to_execution' || intent === 'resource_heartbeat') {
+    push('get_strategies', {}, 'Load persisted signals/rules (from prior research cats).');
+    push('fetch_market', tokenRef, 'Confirm with token from signals.');
+    push('get_farmability', tokenRef, 'Health incl competitionSignal/sentiment proxy.');
+    push('wait_seconds', { seconds: 2, reason: 'heartbeat/resource discipline (use resources for live vs poll)' }, 'Autonomy via resources + explicit wait (no timer loops).');
+    push('place_limit_order', { ...tokenRef, price: '<from strategy/calc explicit>', size: '<from suggest or rules>', side: 'BUY' }, 'Explicit ONLY from strategy after research.');
   }
 
   push('get_mcp_usage', {}, 'Session observability.');

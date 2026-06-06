@@ -1231,6 +1231,9 @@ export function formatMarketSignals(data: {
   tokenId: string;
   farmability?: object;
   bayesian?: { posterior: number; divergenceBps: number; actionHint: string; reasoning: string };
+  externalSignal?: number;
+  contradictionBps?: number;
+  contradictionNote?: string;
 }): object {
   return omitUndefined({
     'Token Id': data.tokenId,
@@ -1243,7 +1246,10 @@ export function formatMarketSignals(data: {
           Reasoning: data.bayesian.reasoning,
         }
       : 'No external signal provided (pass signal + optional prior/weight)',
-    Note: 'Deterministic MCP signals only. Host LLM interprets and updates strategy store.',
+    'External/X Sentiment Signal': data.externalSignal,
+    'X vs Book Contradiction (bps)': data.contradictionBps,
+    'Contradiction Note (ties to competitionSignal/farmability)': data.contradictionNote,
+    Note: 'Deterministic MCP signals only (host supplies X sentiment via x_search -> externalSignals to alpha). Host LLM interprets, updates strategy store (get_strategies first). Cross farmability competition/sentiment for decisions.',
   });
 }
 

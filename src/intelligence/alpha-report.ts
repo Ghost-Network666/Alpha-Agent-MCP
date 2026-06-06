@@ -237,6 +237,22 @@ export async function buildAlphaReport(
     }
   }
 
+  // Enhanced externalSignals + simple X-vs-book contradiction (for sentiment fusion/alpha; host supplies X sentiment via x_search -> externalSignals; no native X in MCP)
+  // Ties directly to competitionSignal/farmability (from get_farmability) for agent decisions without guessing.
+  for (const inp of inputs) {
+    if (inp.externalSignal != null && inp.prior != null) {
+      const div = Math.abs(inp.externalSignal - inp.prior);
+      (inp as any).contradictionBps = Math.round(div * 10000);
+      const compSig = (inp as any).farmability?.competitionSignal ?? (inp as any).farmability?.['Competition / Sentiment Signal'];
+      if (compSig != null || (inp as any).farmability) {
+        (inp as any).contradictionNote = `X/external signal (${inp.externalSignal}) vs book prior/skew (${inp.prior}) = ${(inp as any).contradictionBps}bps divergence; farmability competition/sentiment: ${compSig || 'see farmability'}. Use in strategy + size calc.`;
+      }
+      if ((inp as any).contradictionBps >= 500) {
+        (inp as any).actionHint = 'Strong contradiction — cross with get_farmability + update_strategy before place.';
+      }
+    }
+  }
+
   const opportunities = rankOpportunities(inputs, { goal, maxResults: maxCandidates });
 
   if (!opportunities.length) {

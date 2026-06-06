@@ -221,9 +221,12 @@ export function getAgentRecipes(): Record<string, unknown> {
       tool: 'route_agent_intent',
       tradingRule:
         'Intent picks WHICH tools to call — never substitutes numeric price/size/side on place_*.',
+      note: 'Supports 12+ NL queries via intent (e.g. "x sentiment fusion", "use host x_search for sentiment then externalSignals to alpha/strategy", "research categories first (External/Intelligence/Discovery) then execution after signals in strategy", "heartbeat/resource autonomy", "contradiction X vs book"). Host does x_search/sentiment (no native X search in MCP per rules); pass results as externalSignals array to generate_alpha_report/update_strategy. get_strategies() + fetch_sdk_readme first always.',
       intents: Object.fromEntries(
         Object.entries(INTENT_REGISTRY).map(([k, v]) => [k, { summary: v.summary, profile: v.profile, primaryTools: v.primaryTools }])
       ),
+      xSentimentForGaps: 'For sentiment/contradiction gaps: host x_keyword_search or semantic on topic (e.g. "weather forecast bearish"), map to externalSignals: [{tokenId, signal: 0.3 (bearish), label: "x_sentiment", weight:0.5}], feed to alpha_report (fuses vs book prior/skew/competitionSignal from farmability), then update_strategy. See alpha-report + reward_farming prompt.',
+      researchExecutionOrder: 'ALWAYS: Research cats first via list_tool_categories + get_tools_by_category("External"|"Intelligence"|"Discovery") + alpha/external tools -> store signals/filters in update_strategy (brain) -> then Execution (Trading/Rewards/place_*) using explicit from get_strategies + calc. Never mix; get_strategies() at loop start.',
     },
     startup: [
       'Routing always on — every native tool returns routing.nextTools; optional configure_agent_routing({ intent: "rewards_farm" })',
