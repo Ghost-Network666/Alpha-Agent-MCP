@@ -3,3 +3,6 @@ export { fetchFarmabilitySnapshot, type FarmabilitySnapshot } from './farmabilit
 export { fetchRewardCandidates, type RewardCandidate } from './rewards-candidates.js';
 export { rankOpportunities, type RankedOpportunity, type OpportunityInput } from './ranking.js';
 export { buildAlphaReport, type AlphaReport, type AlphaReportGoal, type AlphaReportRequest } from './alpha-report.js';
+export { detectMispricing, scanMispricingOpportunities, type MispricingSignal } from './mispricing.js';
+export { getMomentumSignal, type MomentumSignal } from './momentum.js';
+export { computeEnsembleEdge, type EnsembleEdge } from './ensemble.js';
