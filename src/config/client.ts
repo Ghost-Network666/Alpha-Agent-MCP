@@ -9,19 +9,17 @@ import {
 } from '@polymarket/client';
 import { privateKey } from '@polymarket/client/viem';
 import { logger } from '../utils/logger.js';
+import { resolveClobAccountIdentity } from './account-identity.js';
+import { withAccountIdentity } from './secure-client-wrap.js';
 
-// Per official ts-sdk README (primary source): use createPublicClient() for read-only,
-// createSecureClient({ signer: privateKey(pk) from /viem, wallet: DEPOSIT_WALLET_ADDRESS, ... })
-// then .extend(allActions) for the full decorated surface (listMarkets, placeLimitOrder, etc.).
-// See https://github.com/Polymarket/ts-sdk/blob/main/README.md and packages/client for canonical patterns.
+// Per official ts-sdk: createPublicClient() / createSecureClient({ signer, wallet?, credentials?, apiKey? }) + .extend(allActions).
+// See https://github.com/Polymarket/ts-sdk/tree/main/packages/client
 
 let publicClientInstance: PublicClient<PublicActions, SecureActions> | null = null;
 let secureClientInstance: SecureClient<PublicActions, SecureActions> | null = null;
 
 export function getPublicClient(): PublicClient<PublicActions, SecureActions> {
   if (!publicClientInstance) {
-    // Per official ts-sdk: createPublicClient() + .extend(allActions) for full surface (listMarkets etc.).
-    // See official README/packages/client for client creation and decorators.
     const raw = createPublicClient();
     publicClientInstance = raw.extend(allActions);
     logger.debug('Public client initialized (with allActions)');
@@ -29,14 +27,30 @@ export function getPublicClient(): PublicClient<PublicActions, SecureActions> {
   return publicClientInstance;
 }
 
+function buildRelayerApiKey(): { key: string; address: string } | undefined {
+  if (process.env.RELAYER_API_KEY && process.env.RELAYER_API_KEY_ADDRESS) {
+    return { key: process.env.RELAYER_API_KEY, address: process.env.RELAYER_API_KEY_ADDRESS };
+  }
+  return undefined;
+}
+
+function buildClobCredentials():
+  | { key: string; secret: string; passphrase: string }
+  | undefined {
+  const key = process.env.CLOB_API_KEY;
+  const secret = process.env.CLOB_SECRET;
+  const passphrase = process.env.CLOB_PASS_PHRASE;
+  if (key && secret && passphrase) {
+    return { key, secret, passphrase };
+  }
+  return undefined;
+}
+
 /**
- * Creates the SecureClient using exactly the pattern in the official ts-sdk README (PRIMARY, with deposit wallet defaults):
- *   createSecureClient({ signer: privateKey(...) from @polymarket/client/viem , wallet? (omitted => SDK derives current Deposit Wallet), apiKey? for relayer etc. })
- *   then .extend(allActions).
- * See https://github.com/Polymarket/ts-sdk/blob/main/README.md + packages/client/src/clients.ts (latest: default secure to deposit, setupGasless no-op).
- *
- * Per latest SDK: if no WALLET env, omit to let SDK default to signer's deterministic Deposit Wallet (auto-deploy if needed for DEPOSIT_WALLET).
- * Gasless setup now happens inside createSecureClient for non-EOA; setupGaslessWallet is @deprecated no-op.
+ * Authenticated client per ts-sdk `createSecureClient`:
+ * - L2 CLOB creds from `CLOB_API_KEY` / `CLOB_SECRET` / `CLOB_PASS_PHRASE` when set
+ * - Relayer gasless via `apiKey` when set
+ * - Account identity corrected via `CLOB_SIGNATURE_TYPE` for balance/orders (POLY_PROXY funder accounts)
  */
 export async function getSecureClient(): Promise<SecureClient<PublicActions, SecureActions>> {
   if (secureClientInstance) return secureClientInstance;
@@ -49,60 +63,59 @@ export async function getSecureClient(): Promise<SecureClient<PublicActions, Sec
   }
 
   const signer = privateKey(pk);
+  const config: Parameters<typeof createSecureClient>[0] = { signer };
 
-  // Full exhaustive auth support per SDK createSecureClient options + spec (relayer/builder/apiKey for gasless/attribution + EOA signer + optional deposit wallet).
-  // Explicit extend(allActions) for full surface (trading, wallet, secure account, rewards, etc.).
-  // Align to new default: pass wallet only if provided; SDK will default to derived Deposit Wallet.
-  const config: any = { signer };
   if (wallet) {
     config.wallet = wallet;
   }
-  if (process.env.RELAYER_API_KEY && process.env.RELAYER_API_KEY_ADDRESS) {
-    config.apiKey = { key: process.env.RELAYER_API_KEY, address: process.env.RELAYER_API_KEY_ADDRESS };
-  } else if (process.env.BUILDER_API_KEY && process.env.BUILDER_SECRET && process.env.BUILDER_PASSPHRASE) {
-    // Builder HMAC path (SDK accepts via other means or post; here we note for completeness; gasless prefers relayer).
-    config.builder = { key: process.env.BUILDER_API_KEY, secret: process.env.BUILDER_SECRET, passphrase: process.env.BUILDER_PASSPHRASE };
+
+  const credentials = buildClobCredentials();
+  if (credentials) {
+    config.credentials = credentials as Parameters<typeof createSecureClient>[0]['credentials'];
   }
+
+  const apiKey = buildRelayerApiKey();
+  if (apiKey) {
+    config.apiKey = apiKey;
+  }
+
   const raw = await createSecureClient(config);
-  secureClientInstance = raw.extend(allActions);
-  logger.info('Secure client initialized (full auth support + EOA signer + deposit wallet default per latest SDK, with allActions)');
+  const extended = raw.extend(allActions);
+  const account = resolveClobAccountIdentity(extended.account, wallet);
+  secureClientInstance = withAccountIdentity(extended, account);
+
+  logger.info('Secure client initialized (ts-sdk createSecureClient + credentials + CLOB account identity)', {
+    walletType: account.walletType,
+    signer: account.signer,
+    wallet: account.wallet,
+    hasClobCredentials: !!credentials,
+    hasRelayer: !!apiKey,
+  });
+
   return secureClientInstance;
 }
 
-/**
- * Call setupGaslessWallet on the current secure client and replace the cached
- * instance with the returned client (per SDK contract and MCP requirement).
- * Returns the new client.
- *
- * Per latest SDK (feat: default secure client to deposit wallet): setupGaslessWallet is
- * @deprecated and a no-op (returns client as-is). Gasless/deposit wallet setup is now
- * performed inside createSecureClient for non-EOA wallets. Kept for compat + MCP tool.
- */
+/** Reset cached client (tests / after env reload). */
+export function resetSecureClient(): void {
+  secureClientInstance = null;
+}
+
 export async function setupGaslessWallet(): Promise<SecureClient<PublicActions, SecureActions>> {
   const current = await getSecureClient();
   const updated = await current.setupGaslessWallet();
-  secureClientInstance = updated;
-  logger.info('Gasless wallet setup (no-op per latest SDK deposit default; handled at createSecureClient)');
-  return updated;
+  const account = resolveClobAccountIdentity(updated.account);
+  secureClientInstance = withAccountIdentity(updated.extend(allActions), account);
+  logger.info('Gasless wallet setup complete', { walletType: account.walletType });
+  return secureClientInstance;
 }
 
-/**
- * Convenience for library consumers: ensure gasless + approvals on a client you hold.
- * For MCP, use the 'setup_gasless_wallet' tool + the trading approval tools directly.
- *
- * Per latest SDK: approvals are idempotent (safe to call repeatedly). Gasless setup
- * is handled at create time for deposit wallets; setupGaslessWallet is no-op.
- */
 export async function ensureTradingSetup(secureClient: SecureClient<PublicActions, SecureActions>): Promise<void> {
-  // Gasless/deposit now defaulted in createSecureClient (per feat default to deposit wallet).
-  // isGaslessReady + setupGaslessWallet kept for compat but no longer required for standard flows.
   const isGasless = await secureClient.isGaslessReady().catch(() => false);
   if (!isGasless) {
-    logger.info('Gasless not ready (setup now automatic for deposit wallets in createSecureClient)...');
+    logger.info('Gasless not ready (automatic for deposit wallets in createSecureClient)...');
   }
 
-  // Approvals now idempotent per latest SDK.
-  logger.info('Ensuring trading approvals (ERC20 + CTF setApprovalForAll, idempotent)...');
+  logger.info('Ensuring trading approvals (idempotent)...');
   const handle = await secureClient.setupTradingApprovals();
   await handle.wait();
   logger.info('Trading approvals confirmed');

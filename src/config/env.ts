@@ -1,4 +1,7 @@
-import 'dotenv/config';
+import { loadProjectEnv } from './load-env.js';
+
+loadProjectEnv();
+
 import { z } from 'zod';
 
 /** Base schema — auth fields are optional so public/read-only commands work with zero config. */

@@ -30,34 +30,37 @@ pnpm build
 
 ## Step 2 — Environment variables
 
-This MCP supports two different ways of receiving credentials. They are **not** the same.
+**Canonical credentials:** `~/.hermes/.env` (`$HERMES_HOME/.env`) is the **single source of truth** for all secrets — Polymarket wallet keys, relayer/builder auth, Hermes gateway keys, and everything else in the Hermes stack. Alpha-MCP loads this file at startup (`loadProjectEnv()` in `src/config/load-env.ts`).
 
-### Local development / manual testing
+- **Do not** create `Alpha-MCP-TS/.env`.
+- **Do not** duplicate secrets in `mcp_servers.*.env` in Hermes `config.yaml`, Grok `config.toml` env blocks, or `--env` flags for routine use.
+- Profile `.env` files under `~/.hermes/profiles/*/` must stay **empty**; gateway units use `EnvironmentFile=/home/ghostnetwork/.hermes/.env`.
 
-Create a `.env` file in the project root:
+Put credentials in `~/.hermes/.env` only:
 
 ```env
-EOA_PRIVATE_KEY=0x       # EOA wallet private key — used for API key derivation and signing
-DEPOSIT_WALLET_ADDRESS=0x # Platform deposit/proxy wallet address
-POLYMARKET_ENV=mainnet    # mainnet or amoy
+EOA_PRIVATE_KEY=0x...              # EOA wallet private key
+DEPOSIT_WALLET_ADDRESS=0x...       # Platform deposit/proxy wallet address
+POLYMARKET_ENV=mainnet             # mainnet or amoy
+RELAYER_API_KEY=...                # Preferred for gasless (or use BUILDER_* instead)
+RELAYER_API_KEY_ADDRESS=0x...
 ```
 
-When you run the server directly (`node dist/mcp.js` or the `mcp` script), `dotenv` loads this file.
+When you run the server directly (`node dist/mcp.js`), it loads `~/.hermes/.env` automatically — no project-local `.env` required.
 
-### Using with Agent Hosts (Grok Build, Hermes, OpenClaw, etc.) — READ THIS
+### Agent hosts (Grok Build, Hermes, OpenClaw, etc.)
 
-When an agent runtime launches this MCP server, **the agent host controls the environment**, not a local `.env` file.
+Register the MCP with **command + args only**; credentials come from `~/.hermes/.env`:
 
-- The host starts `node /path/to/dist/mcp.js` as a child process.
-- Any `.env` file is only loaded if the host happens to set the current working directory to this project folder (fragile and not recommended).
-- **You must pass the secrets explicitly** through the agent's MCP server configuration.
+```yaml
+mcp_servers:
+  polymarket:
+    command: node
+    args: ["/path/to/Alpha-MCP-TS/dist/mcp.js"]
+    enabled: true
+```
 
-This MCP includes a small alias mapper so you can use clean names in agent configs:
-
-- `EOA_PRIVATE_KEY` → becomes `PRIVATE_KEY` internally
-- `DEPOSIT_WALLET_ADDRESS` → becomes `WALLET_ADDRESS` internally
-
-**Recommended names to use in agent configs:** `EOA_PRIVATE_KEY` + `DEPOSIT_WALLET_ADDRESS`.
+This MCP maps aliases internally: `EOA_PRIVATE_KEY` → `PRIVATE_KEY`, `DEPOSIT_WALLET_ADDRESS` → `WALLET_ADDRESS`.
 
 Auth note: API keys must be derived from the EOA private key. Every order payload must have maker = signer = deposit wallet, ownerAddress = EOA.
 
@@ -88,15 +91,12 @@ See `AGENTS.md` and `docs/HERMES_AGENT_BOOTSTRAP.md` (paste into `~/.hermes/AGEN
 
 You must supply **at least one** of the two strategies (both are supported and create separate clients). Relayer is preferred when available for gasless trading.
 
-Use this command (with at least one API key strategy — Relayer preferred for gasless):
+Ensure wallet keys and relayer/builder auth are in `~/.hermes/.env`, then register **without** `--env` flags:
 
 ```bash
 hermes mcp add polymarket \
   --command node \
   --args "/absolute/path/to/AlphaMCP-TS/dist/mcp.js" \
-  --env EOA_PRIVATE_KEY=0xYOUR_EOA_PRIVATE_KEY \
-  --env DEPOSIT_WALLET_ADDRESS=0xYOUR_DEPOSIT_WALLET_ADDRESS \
-  --env POLYMARKET_ENV=mainnet \
   --tools-include "get_agent_recipes,discover_topic,fetch_market,get_strategies,list_positions,get_balance_allowance"
 ```
 
@@ -136,10 +136,10 @@ This opens an interactive checklist.
 
 ### Credential Handling (Critical)
 
-- **Never** commit your `EOA_PRIVATE_KEY` or `DEPOSIT_WALLET_ADDRESS` anywhere.
-- These values are supplied **only once** at registration time via the `--env` flags (or during interactive catalog install).
-- **When an agent updates this repo**, it must **never** re-run the registration command. Doing so risks losing or requiring re-entry of your keys.
-- Your Hermes configuration (including all credentials under `mcp_servers.polymarket.env`) remains **completely untouched** during any code updates.
+- **Never** commit `EOA_PRIVATE_KEY`, `DEPOSIT_WALLET_ADDRESS`, or other secrets anywhere.
+- All credentials live in **`~/.hermes/.env` only** — edit that file when keys change; then `npm run build` and `/reload-mcp` (or restart the gateway).
+- **Do not** put secrets in `mcp_servers.polymarket.env` or `Alpha-MCP-TS/.env`.
+- When an agent updates this repo, it must **not** re-run `hermes mcp add` with new `--env` flags — that duplicates or overwrites the canonical source.
 
 ### Authentication Strategies (Relayer vs Builder)
 
@@ -152,43 +152,17 @@ You must provide **at least one** complete set. Both can be supplied at the same
 
 **Public repo note:** This is a public project. Always use your own keys in production. The examples below use placeholders for user-provided setups. For the project's own recommended Relayer setup (which "works" for gasless with builder attribution), see the specific example.
 
-**Recommended config example (user provides everything - most common for personal use):**
+**Recommended config example** (secrets in `~/.hermes/.env`, not here):
 
 ```yaml
 mcp_servers:
   polymarket:
     command: node
     args: ["/path/to/Alpha-MCP-TS/dist/mcp.js"]
-    env:
-      EOA_PRIVATE_KEY: "0xYOUR_EOA_PRIVATE_KEY"             # Required (your EOA)
-      DEPOSIT_WALLET_ADDRESS: "0xYOUR_DEPOSIT_WALLET_ADDRESS"  # Required (your deposit/proxy)
-      POLYMARKET_ENV: mainnet
-      # At least one of the two strategies below:
-      RELAYER_API_KEY: "..."                                # Preferred for gasless
-      RELAYER_API_KEY_ADDRESS: "0xYOUR_RELAYER_ADDRESS"
-      # BUILDER_API_KEY: "..."
-      # BUILDER_SECRET: "..."
-      # BUILDER_PASSPHRASE: "..."
     enabled: true
 ```
 
-**Example for this project's recommended Relayer setup (gasless, uses project's builder for attribution - this is the one that "works" with the project's keys):**
-
-This uses the project's builder deposit address (public on-chain) paired with the project's RELAYER_API_KEY. Your activity will be attributed to the project's builder.
-
-```yaml
-mcp_servers:
-  polymarket:
-    command: node
-    args: ["/path/to/Alpha-MCP-TS/dist/mcp.js"]
-    env:
-      EOA_PRIVATE_KEY: "0xYOUR_EOA_PRIVATE_KEY"   # Your EOA (still required for signing in some flows)
-      DEPOSIT_WALLET_ADDRESS: "0xYOUR_DEPOSIT_WALLET_ADDRESS"  # Supply the actual deposit (use project builder deposit only if you want attribution to it; replace the placeholder)
-      POLYMARKET_ENV: mainnet
-      RELAYER_API_KEY: "your-relayer-key-here"   # The RELAYER_API_KEY (or builder equiv)
-      RELAYER_API_KEY_ADDRESS: "0xYOUR_RELAYER_OR_BUILDER_ADDRESS"  # Matches the deposit for attribution if using
-    enabled: true
-```
+**Relayer setup (gasless):** put `EOA_PRIVATE_KEY`, `DEPOSIT_WALLET_ADDRESS`, `RELAYER_API_KEY`, and `RELAYER_API_KEY_ADDRESS` in `~/.hermes/.env`. Hermes `config.yaml` stays command/args only (same YAML as above).
 
 The old hard requirement for only Builder keys in MCP mode has been removed. Either strategy (or both) now works.
 
@@ -278,7 +252,7 @@ Use the server name from `mcp.servers` in `~/.openclaw/openclaw.json`. Agents: r
 
 ## Other stdio hosts
 
-Any host that supports stdio MCP can use `node /path/to/dist/mcp.js` with env vars in the server definition. Never assume a local `.env` will be picked up.
+Any host that supports stdio MCP can use `node /path/to/dist/mcp.js`. Credentials are loaded from `~/.hermes/.env` at startup — do not rely on a project-local `.env` or host `env:` blocks for routine use.
 
 ## After Code Changes (Important)
 

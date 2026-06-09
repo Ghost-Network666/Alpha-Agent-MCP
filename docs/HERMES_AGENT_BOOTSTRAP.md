@@ -35,17 +35,20 @@ MCP server: AlphaMCP-TS (`alphamcp` in Grok) — stdio `dist/mcp.js`, tier-1 ~28
 
 ---
 
+## Credentials (canonical)
+
+**All secrets live in `~/.hermes/.env` only** (`/home/ghostnetwork/.hermes/.env`). Alpha-MCP loads this file at startup. Do not duplicate wallet keys in `mcp_servers.*.env` or `Alpha-MCP-TS/.env`.
+
 ## Hermes MCP config (stdio)
 
-Point Hermes at the built server (same as `.grok/config.toml`):
+Point Hermes at the built server — no `env:` block needed (credentials come from `~/.hermes/.env`):
 
 ```yaml
 mcp_servers:
-  alphamcp:
-    command: bash
+  polymarket:
+    command: node
     args:
-      - -lc
-      - cd '/path/to/AlphaMCP TS' && exec node dist/mcp.js
+      - /home/ghostnetwork/Alpha-MCP-TS/dist/mcp.js
 ```
 
 Use `load_agent_profile` profiles: `weather` | `rewards` | `trading` | `discovery` | `full`.

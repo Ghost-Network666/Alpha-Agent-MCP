@@ -1,5 +1,7 @@
 // @ts-nocheck -- SDK beta types + heavy use of loose Record args for flexibility (pre-existing pattern across the file)
-import 'dotenv/config';
+import { loadProjectEnv } from './config/load-env.js';
+
+loadProjectEnv();
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -3129,6 +3131,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         let data: any;
         try {
+          // SDK pattern: refresh CLOB cache then fetch (packages/client/src/actions/account.ts)
+          if (args.sync !== false && assetType === 'COLLATERAL') {
+            await callWithRateLimitProtection(
+              () => updateBalanceAllowance(sec, { assetType }),
+              'updateBalanceAllowance'
+            ).catch(() => undefined);
+          }
           const balRes = await callWithRateLimitProtection(
             () => fetchBalanceAllowance(sec, { assetType }),
             'fetchBalanceAllowance'
@@ -3166,6 +3175,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           success: true,
           assetType,
+          accountWalletType: sec.account?.walletType,
+          funder: sec.account?.wallet,
+          signer: sec.account?.signer,
           balance: balance.toFixed(2),
           balanceRaw: rawBalance,
           maxAllowanceApprox: maxAllowance.toFixed(2),

@@ -429,6 +429,17 @@ When in doubt, re-read the prompt contents inside `src/mcp.ts`. They are the con
 
 ---
 
+## Canonical credentials — `~/.hermes/.env` only (permanent)
+
+**Hard rule:** `/home/ghostnetwork/.hermes/.env` (`$HERMES_HOME/.env`) is the **single source of truth** for all credentials — Polymarket wallet (`EOA_PRIVATE_KEY`, `DEPOSIT_WALLET_ADDRESS`, `RELAYER_*`, `BUILDER_*`, etc.) and Hermes gateway keys.
+
+- Alpha-MCP loads it via `src/config/load-env.ts` on startup (`override: true`) — works regardless of Hermes/Grok cwd.
+- **Do not** duplicate secrets in `Alpha-MCP-TS/.env`, `~/.hermes/config.yaml` `mcp_servers.*.env`, Grok `config.toml` env blocks, or host `--env` flags for routine use.
+- Hermes `mcp_servers.polymarket` should only point at `node …/Alpha-MCP-TS/dist/mcp.js` — no `${EOA_PRIVATE_KEY}` templates (those caused literal-placeholder / hex-key errors).
+- When editing credentials, change **only** `~/.hermes/.env`, then `npm run build` + restart/reload MCP (`/reload-mcp` in Hermes).
+
+Re-read this section before any credential or MCP-host config change.
+
 ## Public MCP — No Hardcoded Wallets, Private Keys, or Defaults
 
 **Hard rule (per user instructions)**: This MCP and repo are **public**. You must **never** commit, add, or leave in the codebase any hardcoded wallet addresses, private keys, or defaults (e.g., the former `0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f` builder default for `DEPOSIT_WALLET_ADDRESS` / `WALLET_ADDRESS` in MCP mode).

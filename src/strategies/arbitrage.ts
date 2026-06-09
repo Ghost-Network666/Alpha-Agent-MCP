@@ -39,5 +39,5 @@ export async function executeSimpleArbitrage(tokenId: string, edgeThreshold: num
 }
 
 export async function scanAndReportArbitrage(tokenIds: string[]) {
-  return scanMispricingOpportunities(tokenIds);
+  return scanMispricingOpportunities();
 }
