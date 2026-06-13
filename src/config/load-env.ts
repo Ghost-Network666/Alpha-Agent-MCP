@@ -95,3 +95,20 @@ export function loadProjectEnv(): void {
 
   // Never mutate further after this point — callers (getSecureClient etc.) read process.env directly.
 }
+
+/** Force reload (for dynamic credential tools in long-running agents). */
+export function forceReloadEnv(): void {
+  loaded = false;
+  loadProjectEnv();
+}
+
+/** Switch Hermes profile at runtime (sets HERMES_HOME and reloads). Supports learning agents changing identities without restart. */
+export function switchToHermesProfile(profilePath: string): string {
+  if (!profilePath) {
+    throw new Error('profilePath (e.g. ~/.hermes/profiles/myprofile) is required');
+  }
+  process.env.HERMES_HOME = profilePath;
+  loaded = false;
+  loadProjectEnv();
+  return `Switched to Hermes profile: HERMES_HOME=${profilePath}. Credentials reloaded from the profile .env. Reset clients or next getSecureClient will use new env.`;
+}

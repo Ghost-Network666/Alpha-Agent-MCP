@@ -52,7 +52,12 @@ export type AgentIntent =
   | 'advanced_account_wallet'
   | 'strategy_sizing_complete'
   | 'weather_complete'
-  | 'automation_orchestration';
+  | 'automation_orchestration'
+  | 'enable_realtime_streams'
+  | 'configure_lazy_tool_discovery'
+  | 'reload_credentials'
+  | 'switch_profile'
+  | 'full_api_coverage';
 
 export type IntentRouteRequest = {
   intent?: AgentIntent; // optional when naturalLanguage is provided for built-in NLR classification
@@ -155,6 +160,27 @@ export const INTENT_REGISTRY: Record<
     summary: 'Topic/events/markets with tokenIds',
     profile: 'discovery',
     primaryTools: ['discover_topic', 'fetch_market', 'search'],
+  },
+  enable_realtime_streams: {
+    summary: 'Setup zero-token real-time via MCP Resources (subscribe user/orders, user/fills, market/book for push events on fills/positions without polling).',
+    primaryTools: ['resources/subscribe', 'resources/list', 'get_mcp_usage'],
+  },
+  configure_lazy_tool_discovery: {
+    summary: 'Enable extreme token-efficient lazy loading: use only meta (search_tools + tool_describe for on-demand schemas, route_agent_intent for plans). Avoids loading 110 schemas upfront.',
+    primaryTools: ['search_tools', 'tool_describe', 'route_agent_intent', 'get_agent_recipes'],
+  },
+  reload_credentials: {
+    summary: 'Runtime reload of host .env for key rotation (supports long-running learning agents).',
+    primaryTools: ['reload_credentials', 'get_strategies', 'mcp_health'],
+  },
+  switch_profile: {
+    summary: 'Switch Hermes profile at runtime for identity change (multi-profile self-improving agents).',
+    primaryTools: ['switch_profile', 'reload_credentials', 'get_strategies'],
+  },
+  full_api_coverage: {
+    summary: 'Access full Gamma (discovery/tags/series) + Data (analytics/P&L/positions beyond CLOB) via additional wrapped tools.',
+    profile: 'discovery',
+    primaryTools: ['list_tags', 'fetch_tag', 'discover_topic', 'list_positions', 'get_mcp_usage'],
   },
   check_orderbook: {
     summary: 'CLOB depth (tier-1)',
@@ -604,6 +630,32 @@ export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
       'Primary discovery.'
     );
     push('fetch_market', tokenRef, 'Full market card.');
+  } else if (intent === 'enable_realtime_streams') {
+    push('get_strategies', {}, 'Load rules for realtime policy (e.g. which streams to enable).');
+    // Note: actual subscribe is via MCP resources/subscribe protocol (host does after plan); push meta for awareness
+    push('mcp_health', {}, 'Check resources health post subscribe.');
+    push('get_mcp_usage', {}, 'Observability for stream activity.');
+  } else if (intent === 'configure_lazy_tool_discovery') {
+    push('get_agent_recipes', {}, 'Get meta recipes and oneCall for lazy usage.');
+    push('search_tools', { query: 'meta OR describe OR health OR reload', limit: 10 }, 'Discover lazy meta tools.');
+    push('tool_describe', { name: 'tool_describe' }, 'Example on-demand schema (repeat for any tool).');
+    push('route_agent_intent', { intent: 'session_startup' }, 'Use route for plans instead of loading full surface.');
+  } else if (intent === 'reload_credentials' || intent === 'switch_profile') {
+    push('get_strategies', {}, 'Current rules before credential change.');
+    if (intent === 'reload_credentials') {
+      push('reload_credentials', {}, 'Force host .env reload for rotation.');
+    } else {
+      push('switch_profile', { profilePath: req.topic || '<hermes profile path>' }, 'Switch and reload (pass profilePath).');
+    }
+    push('mcp_health', {}, 'Verify new source loaded.');
+    push('get_mcp_usage', {}, 'Track the credential event.');
+  } else if (intent === 'full_api_coverage') {
+    push('get_agent_recipes', {}, 'Recipes now include Gamma/Data examples.');
+    push('list_tags', {}, 'Full Gamma tags (beyond curated).');
+    push('fetch_tag', { slug: req.topic || 'politics' }, 'Specific tag details + id for listMarkets.');
+    push('discover_topic', { topic: req.topic || 'crypto', full: true }, 'Gamma discovery with filters.');
+    push('list_positions', { pageSize: 20 }, 'Data positions + P&L (formatters include realized/unrealized).');
+    push('get_mcp_usage', {}, 'Observability for full surface usage.');
   } else if (intent === 'check_orderbook') {
     push('get_order_book', tokenRef, 'SDK fetchOrderBook via MCP.');
   } else if (intent === 'check_spread') {

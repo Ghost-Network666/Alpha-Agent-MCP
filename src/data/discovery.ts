@@ -361,5 +361,41 @@ export function getAgentRecipes(): Record<string, unknown> {
         arguments: { naturalLanguage: 'list all open world cup events with liquidity over 100k containing group' }
       }
     },
+    publicWalletWatch: {
+      note: 'To monitor any wallet\'s public activity (trades on markets it participates in) without auth (official UserWsClient limitation - only own wallet): 1. Use extract_wallet_from_url on a profile/market URL to get 0x address. 2. Use list_trades({maker: address}) or find markets via public data. 3. Subscribe to polymarket://market/{tokenId}/book (public MarketWsClient) for real-time book/trade updates on those markets. Stays 100% within official SDK (no raw, no auth bypass). Agent can "watch" via public market WS resources.',
+      example: {
+        extract: { tool: 'extract_wallet_from_url', arguments: { url: 'https://polymarket.com/profile/0x123...abc' } },
+        findMarkets: { tool: 'list_trades', arguments: { maker: '0x123...abc', limit: 20 } },
+        watch: 'resources/subscribe { uri: "polymarket://market/<tokenId from trades>/book" } for each relevant market. Get trade events publicly.'
+      }
+    },
+    realtimeResources: {
+      note: 'Zero-token real-time awareness via MCP Resources (server-push, no polling). Subscribe to polymarket://user/orders (fills/cancels), polymarket://user/fills (filtered executions), polymarket://user/positions, polymarket://user/portfolio, polymarket://market/{tokenId}/book. Notifications/resources/updated on changes; re-read only when notified. route_agent_intent({ intent: "enable_realtime_streams" }) for plan. Enables agent learning from live events with minimal tokens.',
+      keyUris: ['polymarket://user/orders', 'polymarket://user/fills', 'polymarket://user/activity', 'polymarket://market/{tokenId}/book'],
+      protocol: 'resources/list + resources/subscribe + resources/read on notification',
+    },
+    lazyMetaTools: {
+      note: 'Extreme token efficiency: default tools/list is small tier-1 meta only. Use search_tools for discovery, tool_describe(name) for on-demand full schema (no 110 upfront). Then direct call or (better) route_agent_intent(NL) for plans with exact steps. configure_lazy_tool_discovery intent for guidance. Reduces initial context >90%. All internal, agent never loads bloat.',
+      metaTools: ['search_tools', 'tool_describe', 'route_agent_intent', 'get_agent_recipes', 'mcp_health', 'get_mcp_usage'],
+    },
+    fullApiCoverage: {
+      note: '100% coverage means using the unified @polymarket/client SDK to its fullest – CLOB, Gamma (via GammaClient actions for market discovery/tags/events/series), Data (via DataClient for analytics/positions/PnL/activity/portfolio), and WebSocket user streams – all through the SDK, no external REST calls or raw HTTP. MCP exposes native tools/resources that call these SDK methods/clients only (e.g. discover_topic/list_tags/fetch_tag for Gamma, list_positions/generate_alpha_report for Data, place_optimized_reward_order for Relayer gasless, resources for WS). Confirmed: gamma-tag-registry.ts for Gamma metadata, list_positions etc. for Data, relayer config for gasless. full_api_coverage intent or route_agent_intent(NL) for plans. See mcp_llms_full_guide (starts with canonical SDK README) for exact mappings.',
+      gamma: ['discover_topic (full paging + auto filters from NL, uses public/GammaClient paths)', 'list_tags', 'fetch_tag (SDK fetchTag)'],
+      data: ['list_positions (with PnL via formatters, DataClient)', 'list_activity', 'fetch_portfolio_value', 'user resources (positions/portfolio/activity)'],
+      streams: 'WS via SDK ReconnectingSubscription (user/market) bridged to MCP Resources (user/orders, user/fills, market/book) for real-time.',
+      relayer: 'place_optimized_reward_order and relayer client for gasless (RelayerClient actions).',
+    },
+    sdkCoverageAndLimitations: {
+      note: 'The MCP is built entirely on @polymarket/client (unified SDK consolidating CLOB/Gamma/Data/Relayer/WS). GammaClient for market discovery (gamma-tag-registry.ts, discover_topic, search). DataClient for analytics (list_positions with PnL, generate_alpha_report). RelayerClient for gasless (place_optimized_reward_order). WebSocket user streams via SDK subs to Resources. Limitation (API, not MCP gap): UserWsClient is authenticated feed – cannot monitor third-party wallet without that wallet\'s credentials. Agent never guesses: use route_agent_intent(NL) for 1-call plans that handle everything internally via SDK.',
+      key: 'All operations SDK-only; see recipes and mcp_llms_full_guide for details.',
+    },
+    dynamicCredentials: {
+      note: 'Runtime credential management for long-running/self-improving agents (no restart). reload_credentials for key rotation (picks current host .env). switch_profile(profilePath) for Hermes multi-profile identity changes. Integrates with loadProjectEnv detection (Hermes/OpenClaw). route for plans.',
+      tools: ['reload_credentials', 'switch_profile'],
+    },
+    observability: {
+      note: 'Lightweight for agent monitoring and self-improvement feedback loops. mcp_health (quick ok, source, resources, counts). mcp_doctor (full). get_mcp_usage (tool calls, blocks, patterns). Structured JSON to stderr in MCP mode. realtime + feedback data feeds agent learning (update_strategy with signals from observations).',
+      tools: ['mcp_health', 'mcp_doctor', 'get_mcp_usage', 'get_routing_feedback'],
+    },
   };
 }

@@ -55,6 +55,12 @@ export const RESOURCE_TEMPLATES = [
     mimeType: 'application/json',
   },
   {
+    uriTemplate: 'polymarket://user/fills',
+    name: 'User Fills (Real-time)',
+    description: 'Filtered view of fills and trades from activity (snapshot; subscribe via user channel for zero-token push on executions). Supports agent real-time awareness without polling.',
+    mimeType: 'application/json',
+  },
+  {
     uriTemplate: 'polymarket://order/{orderId}/fill-status',
     name: 'Order Fill Watch',
     description: 'Live fill status for a specific order. Subscribe to receive notifications when the order is partially or fully filled. Automatically started for every order placed via placement tools.',
@@ -261,6 +267,7 @@ export class ResourceManager {
     if (event.type === 'order' || event.type === 'trade' || event.type === 'fill') {
       notify('polymarket://user/orders');
       notify('polymarket://user/activity');
+      notify('polymarket://user/fills');
 
       // === Per-order fill watch notifications ===
       const orderIdFromEvent = event?.payload?.id || event?.payload?.orderId || event?.id;
@@ -481,6 +488,21 @@ export class ResourceManager {
               uri,
               mimeType: 'application/json',
               text: JSON.stringify({ Activity: formatted.length ? formatted : 'None' }, null, 2),
+            }],
+          };
+        }
+
+        if (subPath === 'fills') {
+          const paginator: Paginated<unknown> = await sec.listActivity({ pageSize: 50 });
+          const page = await paginator.firstPage();
+          const rawItems: any[] = (page?.items ?? []) as any[];
+          const items = rawItems.filter((a: any) => ['TRADE', 'FILL', 'REBATE'].includes(String(a?.type || '').toUpperCase()));
+          const formatted = Array.isArray(items) ? items.map((a: any) => F.formatActivity(a)) : [];
+          return {
+            contents: [{
+              uri,
+              mimeType: 'application/json',
+              text: JSON.stringify({ Fills: formatted.length ? formatted : 'None', note: 'Filtered from activity. Subscribe to polymarket://user/orders or user/activity for real-time push (zero additional tokens for events).' }, null, 2),
             }],
           };
         }

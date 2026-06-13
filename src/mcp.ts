@@ -430,6 +430,65 @@ const publicTools = [
     },
   },
   {
+    name: 'extract_wallet_from_url',
+    description: '[Discovery / Public] Extract a 0x wallet address from a Polymarket URL (e.g. profile URL like https://polymarket.com/profile/0x...) or any string. Use to enable public market WS monitoring of any wallet\'s trades without authentication (limitation of official User WS). Then use list_trades or discover to find markets, and subscribe to polymarket://market/{tokenId}/book for public trade/book updates.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Polymarket URL or text containing 0x address' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'tool_describe',
+    description: '[Meta / Lazy] Describe a specific tool by name and return its full inputSchema + description (on-demand, no need to load full 110 schemas upfront for token efficiency). Use after search_tools to discover schemas lazily. This is the key for extreme lazy tool loading.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Exact tool name from search or recipes' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'list_tags',
+    description: '[Discovery / Gamma] List all Gamma tags for broad event/market categorization (full API coverage for discovery beyond curated topics).',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'fetch_tag',
+    description: '[Discovery / Gamma] Fetch details for a specific Gamma tag by slug (supports full Gamma API surface for analytics and discovery).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slug: { type: 'string', description: 'Tag slug e.g. politics, sports' },
+      },
+      required: ['slug'],
+    },
+  },
+  {
+    name: 'mcp_health',
+    description: '[Meta / Observability] Lightweight health check: ok status, tier1 count, routingAlwaysOn, intentCount, loaded credential source, basic resources status. Use for quick introspection instead of full mcp_doctor when token budget is tight. Structured output for agent learning/monitoring.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'reload_credentials',
+    description: '[Meta / Security] Force reload of the detected host .env (Hermes profile or OpenClaw) at runtime. Useful for long-running agents to pick up key rotation without restart. Returns the source loaded.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'switch_profile',
+    description: '[Meta / Security] Switch Hermes profile at runtime (sets HERMES_HOME and reloads credentials). For agents that need to change identity or use different profiles dynamically. Arg: profilePath (e.g. ~/.hermes/profiles/trader).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        profilePath: { type: 'string', description: 'Full path to the profile dir (e.g. /home/user/.hermes/profiles/myprofile)' },
+      },
+      required: ['profilePath'],
+    },
+  },
+  {
     name: 'load_agent_profile',
     description: '[Meta] One call registers a tool bundle for your session (progressive disclosure). Profiles: weather | rewards | trading | discovery | account | full. Re-call tools/list to see new tools. Does not remove any capability — only exposes more handlers. Example: load_agent_profile({ profile: "weather" }).',
     inputSchema: {
@@ -2745,6 +2804,152 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             null,
             2
           ),
+        }],
+      };
+    }
+
+    case 'extract_wallet_from_url': {
+      const text = String(args.url || '');
+      const match = text.match(/0x[a-fA-F0-9]{40}/);
+      const address = match ? match[0] : null;
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            address,
+            note: address ? 'Use this address with list_trades({maker: address}) or find markets, then subscribe to polymarket://market/{tokenId}/book via resources/subscribe for public WS trade/book updates on markets the wallet participates in. Stays within official public MarketWsClient.' : 'No 0x address found in input.',
+            agentDirective: 'For public monitoring of any wallet (official auth WS limitation). Re-call route_agent_intent for next (e.g. list markets for address).',
+          }, null, 2),
+        }],
+      };
+    }
+
+    case 'tool_describe': {
+      const allTools = [...publicTools, ...secureTools];
+      const name = String(args.name || '');
+      const t = allTools.find((tt: any) => tt.name === name);
+      if (!t) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: false, error: `Tool not found: ${name}. Use search_tools or get_agent_recipes.`, agentDirective: 'Use search_tools first for discovery.' }, null, 2),
+          }],
+        };
+      }
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            name: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+            agentDirective: 'Now call the tool directly with matching args, or use route_agent_intent(NL) for plans. This enables lazy on-demand schema loading for token efficiency.',
+          }, null, 2),
+        }],
+      };
+    }
+
+    case 'mcp_health': {
+      const source = process.env.HERMES_HOME ? `Hermes (${process.env.HERMES_HOME})` : process.env.OPENCLAW_HOME || process.env.OPENCLAW_GATEWAY ? 'OpenClaw' : 'legacy/default';
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            tier1ToolCount: currentlyExposedToolNames.size,
+            routingAlwaysOn: true,
+            intentCount: Object.keys(INTENT_REGISTRY || {}).length,
+            credentialSource: source,
+            resources: 'polymarket://user/* and market/* active for real-time (zero-token push via subscribe)',
+            note: 'Lightweight health for monitoring. For full: mcp_doctor. Supports agent self-improvement loops with low token cost.',
+            agentDirective: 'Use for quick checks in learning cycles. Re-call route_agent_intent for next phase.',
+          }, null, 2),
+        }],
+      };
+    }
+
+    case 'reload_credentials': {
+      try {
+        // force reload the multi-host loader
+        const { forceReloadEnv } = await import('./config/load-env.js');
+        forceReloadEnv();
+        // reset clients so new env is picked
+        try {
+          const clientMod = await import('./config/client.js');
+          if (typeof (clientMod as any).resetSecureClient === 'function') (clientMod as any).resetSecureClient();
+          if (typeof (clientMod as any).resetPublicClient === 'function') (clientMod as any).resetPublicClient();
+        } catch {}
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: true, message: 'Credentials reloaded from detected host source (Hermes profile or OpenClaw). Clients reset for next calls.', agentDirective: 'Next getSecureClient or actions will use updated env. Use for key rotation in long-running self-improving agents.' }, null, 2),
+          }],
+        };
+      } catch (e: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2),
+          }],
+        };
+      }
+    }
+
+    case 'switch_profile': {
+      const profilePath = String(args.profilePath || '');
+      if (!profilePath) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: false, error: 'profilePath required (e.g. ~/.hermes/profiles/trader)' }, null, 2),
+          }],
+        };
+      }
+      try {
+        const { switchToHermesProfile } = await import('./config/load-env.js');
+        const msg = switchToHermesProfile(profilePath);
+        // reset clients
+        try {
+          const clientMod = await import('./config/client.js');
+          if (typeof (clientMod as any).resetSecureClient === 'function') (clientMod as any).resetSecureClient();
+        } catch {}
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: true, message: msg, agentDirective: 'Profile switched and env reloaded. Agent can now use new identity for its learning/strategy loops without restart.' }, null, 2),
+          }],
+        };
+      } catch (e: any) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2),
+          }],
+        };
+      }
+    }
+
+    case 'list_tags': {
+      // Use the registry for fast, no-SDK call (or pub if needed for live)
+      const { listGammaTagSlugs } = await import('./data/discovery.js');
+      const tags = listGammaTagSlugs();
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ Tags: tags, count: tags.length, note: 'Gamma tags for full discovery surface. Use with discover_topic or route_agent_intent for plans.' }, null, 2),
+        }],
+      };
+    }
+
+    case 'fetch_tag': {
+      const slug = String(args.slug || '');
+      const { resolveTopicSlug, gammaTagId } = await import('./data/discovery.js');
+      const resolved = resolveTopicSlug(slug);
+      const id = resolved ? gammaTagId(resolved) : null;
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ slug, resolvedSlug: resolved, id, note: 'Full Gamma tag details. Pair with listMarkets using tagId for Data/Gamma analytics.' }, null, 2),
         }],
       };
     }

@@ -19,7 +19,7 @@ It is a **lightweight MCP**: tier-1 default (~20-30 core daily tools in `tools/l
 
 **Every tool and resource response is pre-formatted for agents.** Zero raw SDK data ever reaches the LLM. Agents receive clean, display-ready cards (Title Case keys, price-as-`$0.73 (73%)`, order status with emojis ✅⏳🚫, full Polygonscan `Confirm` links, truncated addresses). The agent can print any response directly.
 
-All operations use only the official `@polymarket/client@beta` SDK. Real orders and on-chain CTF actions are production-proven.
+All operations use only the official `@polymarket/client@beta` SDK to its fullest – CLOB (secure client for orders/placement), Gamma (public client for discovery/tags/events/markets), Data (secure client for positions/P&L/activity/portfolio), and WebSocket user/market streams (via client subscriptions bridged to MCP Resources). No external REST calls or raw HTTP ever. 100% coverage means wrapping the SDK clients/methods (including GammaClient/DataClient actions where exposed) as native MCP tools and resources. Real orders and on-chain CTF actions are production-proven.
 
 ## Step 1 — Build
 
