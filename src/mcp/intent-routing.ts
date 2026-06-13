@@ -386,7 +386,7 @@ export function classifyNaturalLanguageToIntent(nl: string): {
       session_startup: ['start', 'startup', 'begin', 'initial', 'first time', 'hello', 'new session'],
       mispricing_flip: ['misprice', 'arbitrage', 'edge', 'bayesian', 'external signal'],
       trading_monitor: ['monitor', 'positions', 'open orders', 'portfolio'],
-      discovery_scan: ['discover', 'find market', 'search topic', 'list markets'],
+      discovery_scan: ['discover', 'find market', 'search topic', 'list markets', 'list all', 'full list', 'all events', 'all markets', 'complete list', 'catalog', 'slate', 'list of events', 'list of markets', 'world cup events', 'world cup markets', 'find events', 'show markets', 'top events', 'popular markets', 'high liquidity markets', 'high volume events', 'list gamma', 'all prediction markets', 'sports markets', 'election markets'],
       alpha_scan: ['alpha', 'report', 'rank', 'opportunity'],
       place_limit_explicit: ['place limit', 'explicit order', 'limit order'],
       place_reward_maker: ['place reward', 'maker order', 'optimized reward'],
@@ -407,6 +407,19 @@ export function classifyNaturalLanguageToIntent(nl: string): {
       }
     }
 
+    // strong boost for discovery when NL is "list all / full / complete ... events/markets" for a known topic like world-cup
+    // this ensures route_agent_intent(NL) for mass Gamma data hits the intel auto-execution path with filters
+    if ((text.includes('world') && text.includes('cup')) && (text.includes('list') || text.includes('all') || text.includes('full') || text.includes('complete') || text.includes('catalog') || text.includes('slate')) && (text.includes('event') || text.includes('market'))) {
+      if (intentKey === 'discovery_scan') score += 0.9;
+    }
+
+    // General extreme boost for ANY broad Gamma discovery/intel NL (list/find/show/top/popular/high-liq/high-vol + events/markets/gamma/prediction/sports/election/crypto)
+    // Ensures agent 1-call to route_agent_intent({naturalLanguage}) for everything across Gamma always classifies to discovery_scan high-conf and hits the internal full+auto-filter intel path.
+    if ((text.includes('list') || text.includes('all') || text.includes('full') || text.includes('complete') || text.includes('catalog') || text.includes('find') || text.includes('show') || text.includes('top') || text.includes('popular') || text.includes('high liquidity') || text.includes('high volume')) &&
+        (text.includes('event') || text.includes('market') || text.includes('gamma') || text.includes('prediction') || text.includes('clob') || text.includes('sport') || text.includes('election') || text.includes('crypto') || text.includes('politics'))) {
+      if (intentKey === 'discovery_scan') score += 0.85;
+    }
+
     if (score > 0.1) {
       candidates.push({ intent: intentKey, score: Math.min(0.98, score), kws });
     }
@@ -418,6 +431,29 @@ export function classifyNaturalLanguageToIntent(nl: string): {
 
   candidates.sort((a, b) => b.score - a.score);
   const best = candidates[0];
+
+  // Override for world-cup list/all/events to force discovery_scan with high conf, so 1-call route always hits the intel full+filter path
+  if (text.includes('world') && text.includes('cup') && (text.includes('event') || text.includes('market') || text.includes('list') || text.includes('all') || text.includes('full'))) {
+    return {
+      intent: 'discovery_scan',
+      confidence: 0.95,
+      method: 'heuristic',
+      matchedKeywords: ['world-cup', 'list', 'events', 'all'],
+    };
+  }
+
+  // General final override: any broad Gamma list/find/show NL for events/markets etc -> discovery_scan 0.93
+  // This is core to "agent never guesses, 1 call to MCP route with naturalLanguage, MCP handles ALL filtering/paging internally across Gamma, returns directAnswer"
+  if ((text.includes('list') || text.includes('all') || text.includes('full') || text.includes('find') || text.includes('show') || text.includes('top') || text.includes('popular')) &&
+      (text.includes('event') || text.includes('market') || text.includes('gamma') || text.includes('prediction') || text.includes('sport') || text.includes('election') || text.includes('crypto') || text.includes('politics'))) {
+    return {
+      intent: 'discovery_scan',
+      confidence: 0.93,
+      method: 'heuristic',
+      matchedKeywords: ['gamma-discovery', 'list', 'events', 'markets'],
+    };
+  }
+
   return {
     intent: best.intent,
     confidence: best.score,

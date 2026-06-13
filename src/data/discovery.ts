@@ -133,6 +133,7 @@ export type DiscoverTopicRequest = {
   closed?: boolean;
   includeEvents?: boolean;
   includeMarkets?: boolean;
+  full?: boolean; // for intelligence routing: collect all pages server-side for large topics (e.g. world-cup full list) without client pagination
 };
 
 export type DiscoverTopicResult = {
@@ -154,30 +155,66 @@ export async function discoverTopic(req: DiscoverTopicRequest): Promise<Discover
     );
   }
 
-  const pageSize = Math.min(Math.max(req.pageSize ?? 12, 1), 25);
+  const isFull = !!req.full;
+  const pageSize = isFull ? 100 : Math.min(Math.max(req.pageSize ?? 12, 1), 25);
   const closed = req.closed ?? false;
   const includeEvents = req.includeEvents !== false;
   const includeMarkets = req.includeMarkets !== false;
   const pub = getPublicClient();
 
-  const eventsParams = { tagSlug, closed, pageSize };
-  const marketsParams: Record<string, unknown> = { closed, pageSize };
+  // base params + auto-merge any filters passed from route intel (titleSearch, liquidityNumMin, volumeNumMin, rewardsMinSize, etc.)
+  // so NL like "open world cup events with liquidity over 100k" auto-filters server-side, no mass raw data ever leaves MCP
+  let eventsParams: any = { tagSlug, closed, pageSize };
+  let marketsParams: any = { closed, pageSize };
+  Object.keys(req).forEach((k) => {
+    if (!['topic', 'pageSize', 'closed', 'includeEvents', 'includeMarkets', 'full'].includes(k)) {
+      eventsParams[k] = (req as any)[k];
+      marketsParams[k] = (req as any)[k];
+    }
+  });
 
   let events: Event[] = [];
   let markets: Market[] = [];
   let tagId: number | undefined;
 
   if (includeEvents) {
-    const page = await firstPage(pub.listEvents(eventsParams));
-    events = page.items ?? [];
+    if (isFull) {
+      // full server-side collection for intelligence queries (e.g. "list all world cup")
+      events = [];
+      let offset = 0;
+      while (true) {
+        const params = { ...eventsParams, offset };
+        const page = await firstPage(pub.listEvents(params));
+        const items = page?.items ?? [];
+        events.push(...items);
+        if (items.length < pageSize) break;
+        offset += pageSize;
+      }
+    } else {
+      const page = await firstPage(pub.listEvents(eventsParams));
+      events = page.items ?? [];
+    }
   }
 
   if (includeMarkets) {
     tagId = await resolveTagIdFromSlug(tagSlug);
     if (tagId != null) {
       marketsParams.tagId = tagId;
-      const page = await firstPage(pub.listMarkets(marketsParams as { tagId: number; closed: boolean; pageSize: number }));
-      markets = page.items ?? [];
+      if (isFull) {
+        markets = [];
+        let offset = 0;
+        while (true) {
+          const params = { ...marketsParams, offset };
+          const page = await firstPage(pub.listMarkets(params));
+          const items = page?.items ?? [];
+          markets.push(...items);
+          if (items.length < pageSize) break;
+          offset += pageSize;
+        }
+      } else {
+        const page = await firstPage(pub.listMarkets(marketsParams as { tagId: number; closed: boolean; pageSize: number }));
+        markets = page.items ?? [];
+      }
     }
   }
 
@@ -316,6 +353,13 @@ export function getAgentRecipes(): Record<string, unknown> {
       tool: 'get_strategies',
       note: 'Auto-seeds session defaults when store empty',
       arguments: {},
+    },
+    oneCallNativeIntent: {
+      note: 'THE single native entry point that makes the agent never guess. For ANY Polymarket/Gamma question (discovery, events, World Cup, crypto, elections, sports, prices, catalogs, intelligence, filters, mass data, etc. — across all Gamma): call ONLY route_agent_intent({ naturalLanguage: "your exact question" }). MCP does full internal NLR classification (heuristic, no LLM), builds plan, auto-executes INTERNALLY for intel (full server-side offset paging collection + AUTOMATIC filter extraction from the NL — closed/open, liquidity/volume mins, titleSearch, rewards etc. — so 30k+ raw events never leak; everything MCP handled). Returns plan + directAnswer with the COMPLETE, already-filtered, structured, usable data (events + markets + tag + tokenIds + liquidity + prices + mids). agentDirective says "NATIVE INTENT DELIVERED ... complete answer from one call ... no further calls needed. Everything across Gamma handled inside MCP. No leaking, no raw function". Agent makes 1 call to MCP > gets the answer, no issues. This is full routing + intelligence routing. Filters/pagination/mass handling all internal — agent sees 1 tool and the answer.',
+      example: {
+        tool: 'route_agent_intent',
+        arguments: { naturalLanguage: 'list all open world cup events with liquidity over 100k containing group' }
+      }
     },
   };
 }

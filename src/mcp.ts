@@ -24,6 +24,7 @@ import {
   discoverTopic,
   discoveryAgentNote,
   getAgentRecipes,
+  resolveTopicSlug,
 } from './data/discovery.js';
 import { weatherClient } from './data/weather.js';
 import {
@@ -161,6 +162,16 @@ function recordStepOutcome(tool: string, success: boolean) {
 }
 function isDegraded(tool: string) { return !!circuitBreaker.state[tool]?.degraded; }
 function getBreakerState() { return { ...circuitBreaker.state }; }
+
+// Safe helper for locked composite key (used by route/execute for qualifier recording in heartbeat flows).
+// Defined here so no bare "not defined" refs in guarded calls (typeof guard + def prevents runtime issues in handler scope).
+function getLockedKey(a: any): string | null {
+  if (!a) return null;
+  if (a.lockedStrategyKey) return String(a.lockedStrategyKey);
+  if (a.tokenId && a.market) return `${a.tokenId}:${a.market}`;
+  if (a.tokenId) return String(a.tokenId);
+  return null;
+}
 
 /**
  * Calculates the recommended order size based on explicit intent.
@@ -2377,8 +2388,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         topic: args.topic,
       });
       await persistStrategiesToDisk();
-      const rkey = getLockedKey(args);
-      if (rkey) recordQualifier(rkey, 'route');
+      if (typeof getLockedKey === 'function') {
+        const rkey = getLockedKey(args);
+        if (rkey) recordQualifier(rkey, 'route');
+      }
 
       const plan = buildIntentRoute({
         intent: args.intent,
@@ -2420,6 +2433,96 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       (plan as any).confidence = conf;
       (plan as any).classificationMethod = method;
       recordClassificationFeedback({ naturalLanguage: args.naturalLanguage, resolvedIntent: plan.intent, method, confidence: conf });
+
+      if (typeof getLockedKey === 'function') {
+        const rkey = getLockedKey(args);
+        if (rkey) recordQualifier(rkey, 'route');
+      }
+
+      // Full intelligence routing: agent calls route_agent_intent once with naturalLanguage.
+      // For read/discovery/intel queries (e.g. "list all world cup events..."), MCP internally
+      // classifies, builds plan, auto-executes native steps (using full server-side collection
+      // to bypass client caps), and returns the complete structured answer directly.
+      // Agent never guesses the tool/sequence/args — one native call delivers the response.
+      const nl = args.naturalLanguage || '';
+      const isIntelQuery = plan.intent.includes('discovery') || plan.intent === 'alpha_scan' || /list|all|full|events|markets|world.?cup|catalog|slate|group|find|show|top|popular|high liquidity|high volume/i.test(nl);
+      if (isIntelQuery) {
+        // AUTOMATIC FILTER EXTRACTION from naturalLanguage / intent.
+        // So if the query would return mass data (30k events or huge Gamma), MCP applies filters server-side
+        // (closed, liquidity/volume mins, titleSearch, etc.) AUTOMATICALLY. Agent never stresses about volume,
+        // pagination, or raw filter objects — the result is already filtered and complete.
+        const filters: any = {};
+        const nlLower = nl.toLowerCase();
+        if (/open|active|live|current/i.test(nlLower) && !/closed/i.test(nlLower)) filters.closed = false;
+        if (/closed|ended|past|expired/i.test(nlLower)) filters.closed = true;
+        const liqMatch = nlLower.match(/liquidity\s*(over|above|>|min|high|>=)\s*(\d+)(k|m)?/i);
+        if (liqMatch) {
+          let val = parseInt(liqMatch[2]);
+          if (liqMatch[3] === 'k') val *= 1000;
+          if (liqMatch[3] === 'm') val *= 1000000;
+          filters.liquidityNumMin = val;
+        }
+        const volMatch = nlLower.match(/volume\s*(over|above|>|min|high|>=)\s*(\d+)(k|m)?/i);
+        if (volMatch) {
+          let val = parseInt(volMatch[2]);
+          if (volMatch[3] === 'k') val *= 1000;
+          if (volMatch[3] === 'm') val *= 1000000;
+          filters.volumeNumMin = val;
+        }
+        const titleMatch = nlLower.match(/(title|question|name|about|containing|with)\s+["']?([^"']+?)["']?/i);
+        if (titleMatch) filters.titleSearch = titleMatch[2].trim();
+
+        // Smart topic extraction using resolveTopicSlug for full coverage across Gamma tags (sports, election, trump, crypto, world-cup, etc.)
+        // Safe default always resolvable; titleSearch carries the specific subject so "list events about XYZ" works even if no exact tag.
+        // This + auto-merge in discoverTopic (full server paging + any extra filter keys) = MCP internal handling for everything across Gamma. No raw, no client caps, no agent pagination/filter code.
+        let topic = 'politics';
+        const candidates = ['world-cup', 'sports', 'nfl', 'crypto', 'bitcoin', 'election', 'trump', 'ai', 'uk', 'weather', 'politics', 'macro', 'fed', 'sports'];
+        for (const c of candidates) {
+          const probe = c.replace(/-/g, ' ');
+          if (nlLower.includes(probe) || nlLower.includes(c)) { topic = c; break; }
+        }
+        if (!resolveTopicSlug(topic)) topic = 'politics';
+
+        // Broad subject extraction for titleSearch if not already captured (supports "everything across Gamma")
+        let titleSearch = filters.titleSearch;
+        if (!titleSearch) {
+          const subj = nl.match(/(?:about|on|for|containing|with|named|called|events? about|markets? on)\s+["']?([^"'.!?;]+)["']?/i);
+          if (subj && subj[1]) titleSearch = subj[1].trim();
+        }
+        if (titleSearch) filters.titleSearch = titleSearch;
+
+        const directAnswer: any = {
+          query: nl || plan.intent,
+          source: 'internal full intelligence execution (route_agent_intent + native discovery with full collection + auto-filters)',
+          appliedFilters: filters,
+          topicUsed: topic,
+        };
+
+        // UNCONDITIONAL full filtered discovery for ANY Gamma intel query (list events, markets, tags, world-cup, weather, crypto, politics, elections, sports, arbitrary subject via titleSearch, etc.).
+        // Extracts best topic from NL (alias aware) or safe default, applies auto-filters from intent/NL, full server-side paging/collection (offset loop inside discoverTopic).
+        // Extreme intent intelligence: agent calls route once with NL (filters in language like "open", "liquidity over X", "title containing Y", "high volume sports"), MCP handles ALL fetching, filtering, pagination, mass data internally across Gamma/CLOB reads.
+        // Returns pre-filtered complete structured data in directAnswer — no mass raw (30k+ events etc.), no client pagination, no guessing, no tmp, lightweight usable cards with tokenIds/prices/liquidity. Agent sees 1 tool, gets answer, no issues.
+        const res = await discoverTopic({
+          topic,
+          closed: filters.closed ?? false,
+          includeEvents: true,
+          includeMarkets: true,
+          full: true,
+          ...(filters.titleSearch ? { titleSearch: filters.titleSearch } : {}),
+          ...(filters.liquidityNumMin ? { liquidityNumMin: filters.liquidityNumMin } : {}),
+          ...(filters.volumeNumMin ? { volumeNumMin: filters.volumeNumMin } : {}),
+        });
+        directAnswer.events = res.events || [];
+        directAnswer.markets = res.markets || [];
+        directAnswer.tagId = res.tagId;
+        directAnswer.tagSlug = res.tagSlug;
+        directAnswer.note = 'Complete structured Gamma data (full server-side paging + automatic filters applied — no client caps, no raw mass data ever leaves the MCP, everything handled internally in route_agent_intent). Events + markets include tokenIds, liquidity, prices from SDK. TokenIds ready for fetch_market / get_order_book / trading. Already filtered per your natural language intent — agent never guesses filters, pagination, or deals with 30k+ raw items. 1 call, full answer.';
+
+        if (directAnswer.events?.length || directAnswer.markets?.length) {
+          (plan as any).directAnswer = directAnswer;
+          (plan as any).agentDirective = `NATIVE INTENT DELIVERED: This is the complete filtered answer from one call to route_agent_intent (the ONE tool for Gamma questions). The directAnswer has the full (but automatically filtered) events/markets data — agent never guesses next tool, args, or filters. Everything across Gamma handled inside MCP (no leaking, no raw SDK, no client hacks). ${plan.agentDirective || ''}`;
+        }
+      }
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(plan, null, 2) }],

@@ -30,13 +30,19 @@ pnpm build
 
 ## Step 2 — Environment variables
 
-**Canonical credentials:** `~/.hermes/.env` (`$HERMES_HOME/.env`) is the **single source of truth** for all secrets — Polymarket wallet keys, relayer/builder auth, Hermes gateway keys, and everything else in the Hermes stack. Alpha-MCP loads this file at startup (`loadProjectEnv()` in `src/config/load-env.ts`).
+**Canonical credentials (multi-host auto-detection):** The MCP automatically detects the host framework and loads the correct .env with proper isolation. No manual symlinks or duplication required.
+
+- **Hermes (profile isolation recommended):** Set `HERMES_HOME` (e.g. `~/.hermes/profiles/trader`) and place secrets in `$HERMES_HOME/.env`. When `HERMES_HOME` is set the global `~/.hermes/.env` is **not** loaded (prevents cross-profile leakage). If `HERMES_HOME` is unset but `~/.hermes` exists, the default `~/.hermes/.env` is used.
+- **OpenClaw:** Secrets live in `~/.openclaw/.env` (or the path indicated by `OPENCLAW_HOME` / gateway config). Process environment injected by `openclaw.json` has highest precedence. Workspace `.env` files are ignored for provider secrets (per OpenClaw security rule).
+- Direct / fallback runs still support the legacy `~/.hermes/.env` path (with a logged warning) for backward compatibility during transition.
+
+`loadProjectEnv()` in `src/config/load-env.ts` performs the detection and logs the source (e.g. “Loaded credentials from Hermes profile ($HERMES_HOME=...)”).
 
 - **Do not** create `Alpha-MCP-TS/.env`.
 - **Do not** duplicate secrets in `mcp_servers.*.env` in Hermes `config.yaml`, Grok `config.toml` env blocks, or `--env` flags for routine use.
-- Profile `.env` files under `~/.hermes/profiles/*/` must stay **empty**; gateway units use `EnvironmentFile=/home/ghostnetwork/.hermes/.env`.
+- Profile `.env` files under `~/.hermes/profiles/*/` must stay **empty**; gateway units use `EnvironmentFile=...`.
 
-Put credentials in `~/.hermes/.env` only:
+Put credentials in the host-appropriate location only:
 
 ```env
 EOA_PRIVATE_KEY=0x...              # EOA wallet private key
@@ -221,7 +227,7 @@ User-level config can mirror the same server in `~/.grok/config.toml`. WSL users
 
 ## OpenClaw
 
-Add the server with explicit environment variables in `~/.openclaw/openclaw.json` (or your OpenClaw config):
+Add the server with explicit environment variables in `~/.openclaw/openclaw.json` (or your OpenClaw config). The MCP will automatically detect the OpenClaw context (via `OPENCLAW_HOME`, `OPENCLAW_GATEWAY`, or presence of `~/.openclaw`) and load `~/.openclaw/.env` (process `env` block from the json has highest precedence). You can still supply wallet + keys directly in the json `env` if preferred.
 
 ```json
 {
@@ -247,11 +253,11 @@ Restart the OpenClaw gateway after changes.
 openclaw mcp doctor polymarket --probe
 ```
 
-Use the server name from `mcp.servers` in `~/.openclaw/openclaw.json`. Agents: routing is always on — follow `routing.nextTools` on every tool response.
+Use the server name from `mcp.servers` in `~/.openclaw/openclaw.json`. Agents: routing is always on — follow `routing.nextTools` on every tool response. The same binary works under Hermes (set `HERMES_HOME` for profile isolation) without any changes.
 
 ## Other stdio hosts
 
-Any host that supports stdio MCP can use `node /path/to/dist/mcp.js`. Credentials are loaded from `~/.hermes/.env` at startup — do not rely on a project-local `.env` or host `env:` blocks for routine use.
+Any host that supports stdio MCP can use `node /path/to/dist/mcp.js`. Credentials are loaded automatically from the host’s preferred layout (Hermes profile via `HERMES_HOME`, OpenClaw via `~/.openclaw/.env` or gateway config, or legacy `~/.hermes/.env` with warning). Do not rely on a project-local `.env` or duplicate secrets in host `env:` blocks.
 
 ## After Code Changes (Important)
 
