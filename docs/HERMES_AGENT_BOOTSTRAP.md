@@ -2,7 +2,7 @@
 
 Hermes injects `AGENTS.md` and `SOUL.md` at boot. Paste the sections below so every sub-agent uses **native MCP tools → intent routing → explicit trade params** (never guessing).
 
-MCP server: AlphaMCP-TS (`alphamcp` in Grok) — stdio `dist/mcp.js`, tier-1 ~28 tools, ~145 handlers via categories.
+MCP server: AlphaMCP-TS (`alphamcp` in Grok) — stdio `dist/mcp.js`, tier-1 ~20-30 tools (live), 110 tools visible after full profile/categories (treat live tools/list + mcp_doctor as truth; older references to ~145 reconciled).
 
 ---
 

@@ -16,8 +16,8 @@ export function buildNeverGuessPrompt(): string {
 - Obey every agentDirective.
 
 ## 1. First calls (in order)
-1. tools/call fetch_sdk_readme — routing is always on; optional configure_agent_routing({ intent: "rewards_farm" })
-2. tools/call fetch_sdk_readme — https://github.com/Polymarket/ts-sdk/blob/main/README.md (match routing.sdkMethod)
+1. consult mcp_llms_full_guide prompt (links canonical SDK README) — routing is always on; optional configure_agent_routing({ intent: "rewards_farm" })
+2. use https://github.com/Polymarket/ts-sdk/blob/main/README.md (linked in the prompt; match routing.sdkMethod)
 3. prompts/get agent_routing + never_guess_contract
 4. Use ANY native tool — obey routing.nextTools on every response (no guessing which tool is next)
 5. Re-call tools/list after load_agent_profile when routed

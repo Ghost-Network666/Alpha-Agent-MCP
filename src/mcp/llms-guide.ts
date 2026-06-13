@@ -40,7 +40,7 @@ export function buildMcpLlmsGuide(): string {
   let md = `# MCP Server - Full Agent Guide (SDK README + MCP mappings)
 
 This MCP is **lightweight and agent-first** for the CLOB prediction market platform (prediction markets on Polygon via CLOB + CTF).
-**Core principle**: Tier-1 default (~28 tools). Full ~145 via categories. **route_agent_intent** maps goals → native tool steps + sdkAlignment (confirm via fetch_sdk_readme). Never trade-by-intent. 
+**Core principle**: Tier-1 default (~20-30 tools per live audit). Full surface currently 110 tools via categories/profiles (live tools/list after load_agent_profile("full") or all categories is the truth; the exact count can shift slightly with SDK additions — always verify with mcp_doctor / get_tools_by_category). **route_agent_intent** maps goals → native tool steps + sdkAlignment (confirm via the canonical SDK README URL linked in mcp_llms_full_guide prompt). Never trade-by-intent. 
 **Agents must never guess**: Hermes (host) is the brain and owns the heartbeat.md / OpenClaw enforcement loop + primary control. Heartbeat is the core that keeps Hermes + OpenClaw alive and in control. MCP is the integration surface (send_heartbeat hook + complete intent routing planners callable from host ticks + supporting strategy bag for composite locked rules + signals via externalSignals). Always start with the mandatory sequence below on host heartbeat context. All your logic/rules/filters/exits live under composite keys in the strategy bag (get_strategies(locked) first every host tick). Use only native SDK paths via these explicit tools. Follow every agentDirective. Public: always provide your own keys (no defaults/hardcodes anywhere in this MCP or docs).
 
 **Base instructions (PRIMARY SOURCE OF TRUTH):** For the underlying TS SDK (all APIs, clients, auth, examples, concepts, client creation with createPublicClient/createSecureClient, .extend(allActions) for decorators, method signatures like listMarkets/fetchMarket/placeLimitOrder, param shapes, pagination, errors, WS managers, wallet adapters, etc. — including post Apr 2026 CLOB V2: batch orders, higher limits, new fields min_order_size/tick_size/neg_risk, pUSD, rewritten backend), read the official README first and treat it as canonical: https://github.com/Polymarket/ts-sdk/blob/main/README.md (maintained up-to-date by the maintainers — this MCP uses the SDK 100% natively with no custom HTTP, only thin safe wrappers + formatters + categories + strategyStore). MCP is production-ready for Hermes heartbeat orchestration of locked strategies + Intelligence research signals. 
@@ -50,7 +50,7 @@ Instead of duplicating SDK docs or using stale local MDs/llms.txt, this prompt +
 ## Mandatory Startup Sequence (NEVER SKIP; reinforces no-guess)
 Hermes (host) owns the brain + heartbeat.md / OpenClaw CLOB liveness loop (the core mechanism that keeps Hermes + OpenClaw alive and in control). MCP is the callable integration surface. Drive everything from host heartbeat/resource events:
 1. On host heartbeat tick: send_heartbeat FIRST (per Hermes native heartbeat.md contract for CLOB session health).
-2. fetch_sdk_readme (SDK README primary, kept up-to-date by maintainers) or mcp_llms_full_guide (links it first) + get_agent_recipes — exact + 12+ NL intents (incl "use host x_search for sentiment then externalSignals to alpha/strategy").
+2. mcp_llms_full_guide (links the canonical SDK README URL https://github.com/Polymarket/ts-sdk/blob/main/README.md first, kept up-to-date by maintainers) + get_agent_recipes — exact + 12+ NL intents (incl "use host x_search for sentiment then externalSignals to alpha/strategy").
 3. route_agent_intent({ intent: "session_startup", heartbeat: true, lockedStrategyKey? }) then route_agent_intent({ intent, lockedStrategyKey, heartbeat: true }) — execute steps; confirm vs sdkAlignment. Planners return complete plans for the host to run.
 4. prompts/get agent_routing + mcp_llms_full_guide + mcp_tool_structure_and_categories.
 5. get_strategies(locked composite key or no args; ALWAYS first on every host heartbeat tick before research/exec).
@@ -59,7 +59,7 @@ Hermes (host) owns the brain + heartbeat.md / OpenClaw CLOB liveness loop (the c
 8. Per task: route_agent_intent({ intent: "rewards_farm"|"weather_alpha"|..., lockedStrategyKey, heartbeat: true }) OR discover_topic / list_active / alpha_report (with host externalSignals for X fusion/contradiction).
 9. load_agent_profile / get_tools_by_category when tier-1 insufficient; re-call tools/list.
 10. Use resources (polymarket://market/{tokenId}/book etc) + wait_seconds for host heartbeat/resource driven autonomy (avoid polling).
-11. get_mcp_usage for observability (intelligence patterns tracked). Obey agentDirectives. send_heartbeat + get_strategies(locked) + fetch_sdk_readme first + explicit calc only on every host tick. MCP remains active under host heartbeat-driven calls.
+11. get_mcp_usage for observability (intelligence patterns tracked). Obey agentDirectives. send_heartbeat + get_strategies(locked) + consult the canonical SDK README URL (https://github.com/Polymarket/ts-sdk/blob/main/README.md , linked in mcp_llms_full_guide) + explicit calc only on every host tick. MCP remains active under host heartbeat-driven calls.
 
 ${buildKnownGotchasMarkdown()}
 
@@ -76,7 +76,7 @@ ${buildKnownGotchasMarkdown()}
 - Account: get_balance_allowance, list_positions
 - Weather: get_uk_weather_forecast
 
-Full **142** tools via load_agent_profile({ profile: "weather"|"rewards"|"trading"|"full" }) or get_tools_by_category — nothing removed.
+Full surface (currently 110 tools in live audit after "full" profile) via load_agent_profile({ profile: "weather"|"rewards"|"trading"|"full" }) or get_tools_by_category — nothing removed. Live count from tools/list + categories is authoritative.
 
 ## Full Exhaustive Coverage of the Unified @polymarket/client TS SDK — Exact SDK Functions + MCP Native Mappings (per expert guidance)
 

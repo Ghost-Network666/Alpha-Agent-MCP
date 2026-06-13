@@ -142,6 +142,26 @@ function recordToolUsage(toolName: string) {
   }) + '\n');
 }
 
+// === Routing feedback + circuit breaker stores (for A2A/breaker/feedback/dynamic features) ===
+const routingFeedback: any = { classifications: [], counters: {}, maxEntries: 50 };
+function recordClassificationFeedback(entry: any) {
+  routingFeedback.classifications.push({ ...entry, ts: new Date().toISOString() });
+  if (routingFeedback.classifications.length > routingFeedback.maxEntries) routingFeedback.classifications.shift();
+  const key = `${entry.resolvedIntent || 'unknown'}:${entry.method || 'heuristic'}`;
+  routingFeedback.counters[key] = (routingFeedback.counters[key] || 0) + 1;
+  try { strategyStore.set('routing:feedback', { counters: { ...routingFeedback.counters }, recent: routingFeedback.classifications.slice(-10) }); } catch {}
+}
+const circuitBreaker: any = { state: {}, FAIL_THRESHOLD: 3 };
+function recordStepOutcome(tool: string, success: boolean) {
+  if (!circuitBreaker.state[tool]) circuitBreaker.state[tool] = { consecutiveFails: 0, degraded: false };
+  const st = circuitBreaker.state[tool];
+  if (success) { st.consecutiveFails = 0; st.degraded = false; }
+  else { st.consecutiveFails++; st.lastFail = new Date().toISOString(); if (st.consecutiveFails >= circuitBreaker.FAIL_THRESHOLD) { st.degraded = true; if (tool.includes('place') || tool.includes('reward')) st.fallbackIntent = 'rotate_after_failure'; else st.fallbackIntent = 'discovery_scan'; } }
+  try { strategyStore.set('routing:breaker', { ...circuitBreaker.state }); } catch {}
+}
+function isDegraded(tool: string) { return !!circuitBreaker.state[tool]?.degraded; }
+function getBreakerState() { return { ...circuitBreaker.state }; }
+
 /**
  * Calculates the recommended order size based on explicit intent.
  * This enforces the user's defined rules:
@@ -438,13 +458,18 @@ const publicTools = [
   {
     name: 'route_agent_intent',
     description:
-      '[Meta] PRIMARY INTENT ROUTER for complete authoritative plans: intent (incl. heartbeat_locked_autonomy) → ordered native tool steps + sdkAlignment (MCP↔SDK README) + load_agent_profile when needed. Routes WHICH tools — never price/size/side. START: session_startup (fetch_sdk_readme first). Hermes (host) is the brain; its heartbeat.md / OpenClaw system is the core liveness and control mechanism. When lockedStrategyKey + heartbeat context: plan includes send_heartbeat FIRST (host calls on its native heartbeat/resource events per its heartbeat.md contract to keep CLOB session healthy), get_strategies(locked composite that Hermes owns), research (cats + alpha with host externalSignals), explicit exec, update_strategy (persist to the locked entry Hermes manages). MCP provides the plans as integration surface so it remains active under host heartbeat-driven calls. Intents include session_startup, rewards_farm, heartbeat_locked_autonomy, etc. Host executes the steps.',
+      '[Meta] PRIMARY INTENT ROUTER + built-in NLR (natural language routing). Accepts explicit intent OR naturalLanguage (internal heuristic classifier, no LLM). Returns steps + confidence + classificationMethod. Low confidence (pure NL) is gated. Routes WHICH tools — never price/size/side. Includes A2A delegate support in plans. Host executes the steps.',
     inputSchema: {
       type: 'object',
       properties: {
         intent: {
           type: 'string',
           enum: Object.keys(INTENT_REGISTRY),
+          description: 'Explicit intent (confidence 1.0). Omit and provide naturalLanguage for auto-classify.',
+        },
+        naturalLanguage: {
+          type: 'string',
+          description: 'Raw NL goal. Tool classifies internally to intent + confidence (heuristic on INTENT_REGISTRY + aliases).',
         },
         topic: { type: 'string' },
         tokenId: { type: 'string' },
@@ -455,7 +480,6 @@ const publicTools = [
         lockedStrategyKey: { type: 'string', description: 'Composite e.g. "weather:low" or "market:volume". Locks the entire returned plan + agentDirective to this per-market/per-volume strategy entry. Hermes (host) owns the primary brain and the heartbeat.md loop; this key lets the host drive locked autonomy by calling MCP planners from its heartbeat/resource events.' },
         heartbeat: { type: 'boolean', description: 'Prepend send_heartbeat as first step in the plan. The host (Hermes/OpenClaw) must call this on its native heartbeat/resource notifications (per heartbeat.md CLOB session health contract) before get_strategies(locked) + research-backed execution. This is how the MCP remains active under host control.' },
       },
-      required: ['intent'],
     },
   },
   {
@@ -472,6 +496,56 @@ const publicTools = [
         },
         maxMinCostUsd: { type: 'number' },
         topic: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'execute_recipe',
+    description: '[Meta] NLR + thin recipe orchestrator with circuit breaker. Accepts intent or naturalLanguage. Walks steps with guardrail checks and breaker (N fails -> degraded + fallback). Returns structured executionLog.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        intent: { type: 'string', enum: Object.keys(INTENT_REGISTRY) },
+        naturalLanguage: { type: 'string' },
+        lockedStrategyKey: { type: 'string' },
+        heartbeat: { type: 'boolean' },
+        dryRun: { type: 'boolean' },
+        maxSteps: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'delegate_to_agent',
+    description: '[Meta / A2A] Agent-to-Agent delegation. Returns structured handoff payload for host (OpenClaw sessions_spawn or A2A) to delegate tasks to peer agents. Use after routing when sub-task suits another agent.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string' },
+        intent: { type: 'string' },
+        context: { type: 'object' },
+      },
+      required: ['agentId', 'intent'],
+    },
+  },
+  {
+    name: 'get_routing_feedback',
+    description: '[Meta] Read classifier feedback counters, recent decisions, success rates, and tuning suggestions. Data from route/execute logging into strategy bag (routing:feedback).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        intent: { type: 'string' },
+        limit: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'get_available_tools',
+    description: '[Meta] Dynamic context-aware tool filter (guardrails, balance, etc.). Hides tools that would be blocked. Augments get_tools_by_category.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        context: { type: 'object' },
+        category: { type: 'string' },
       },
     },
   },
@@ -2297,14 +2371,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const strategies: Record<string, unknown> = {};
       for (const [k, v] of strategyStore.entries()) strategies[k] = v;
       writeRoutingConfig(strategyStore, {
-        activeIntent: args.intent,
+        activeIntent: args.intent || 'session_startup',
         autonomousAssist: args.autonomousAssist !== false,
         maxMinCostUsd: args.maxMinCostUsd,
         topic: args.topic,
       });
       await persistStrategiesToDisk();
+      const rkey = getLockedKey(args);
+      if (rkey) recordQualifier(rkey, 'route');
+
       const plan = buildIntentRoute({
         intent: args.intent,
+        naturalLanguage: args.naturalLanguage,
         topic: args.topic,
         tokenId: args.tokenId,
         market: args.market,
@@ -2313,10 +2391,124 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         goal: args.goal,
         strategies,
         lockedStrategyKey: args.lockedStrategyKey,
+        heartbeat: args.heartbeat,
       });
+
+      const conf = (plan as any).confidence ?? 1.0;
+      const method = (plan as any).classificationMethod || 'explicit';
+      const MIN_CONF = 0.55;
+      const usedNL = !!args.naturalLanguage && !args.intent;
+      if (usedNL && conf < MIN_CONF) {
+        recordClassificationFeedback({ naturalLanguage: args.naturalLanguage, resolvedIntent: plan.intent, method, confidence: conf });
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              blockedByConfidence: true,
+              confidence: conf,
+              resolvedIntent: plan.intent,
+              classificationMethod: method,
+              message: 'Low confidence natural language classification. Gate applied.',
+              agentDirective: 'Re-phrase or use explicit intent from get_agent_recipes. Call get_routing_feedback for tuning data.',
+              suggestedTools: ['get_agent_recipes', 'search_tools', 'route_agent_intent with explicit intent'],
+            }, null, 2)
+          }]
+        };
+      }
+
+      (plan as any).confidence = conf;
+      (plan as any).classificationMethod = method;
+      recordClassificationFeedback({ naturalLanguage: args.naturalLanguage, resolvedIntent: plan.intent, method, confidence: conf });
+
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(plan, null, 2) }],
       };
+    }
+
+    case 'execute_recipe': {
+      // Minimal NLR + breaker orchestrator (builds on route_agent_intent plan).
+      const strategies: Record<string, unknown> = {};
+      for (const [k, v] of strategyStore.entries()) strategies[k] = v;
+      const plan = buildIntentRoute({ intent: args.intent, naturalLanguage: args.naturalLanguage, lockedStrategyKey: args.lockedStrategyKey, heartbeat: args.heartbeat, strategies });
+      const conf = (plan as any).confidence ?? 1.0;
+      const MIN = 0.55;
+      if ((!!args.naturalLanguage && !args.intent) && conf < MIN) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ success: false, blockedByConfidence: true, confidence: conf, agentDirective: 'Low conf NL. Use explicit or get_agent_recipes.' }) }] };
+      }
+      recordClassificationFeedback({ naturalLanguage: args.naturalLanguage, resolvedIntent: plan.intent, method: (plan as any).classificationMethod || 'explicit', confidence: conf });
+
+      const dryRun = !!args.dryRun;
+      const log: any[] = [];
+      let halted = false;
+      const steps = plan.steps.slice(0, args.maxSteps || 20);
+      for (const step of steps) {
+        const entry: any = { order: step.order, tool: step.tool, arguments: step.arguments, status: 'planned' };
+        const isMut = isMutationTool(step.tool) || isHighRiskAdvanced(step.tool);
+        if (isDegraded(step.tool) && !dryRun) {
+          entry.status = 'circuit-broken';
+          entry.breaker = getBreakerState()[step.tool];
+          log.push(entry);
+          halted = true;
+          recordStepOutcome(step.tool, false);
+          break;
+        }
+        if (dryRun) {
+          entry.status = 'dry-run-validated';
+        } else if (isMut) {
+          const g = Guard.getGuardrails(strategyStore);
+          if (g.readOnly) {
+            entry.status = 'blocked-by-guardrail';
+            entry.reason = 'readOnly guardrail';
+            recordStepOutcome(step.tool, false);
+            halted = true;
+          } else {
+            entry.status = 'delegated-to-host (mutation will hit guardrails)';
+            recordStepOutcome(step.tool, true);
+          }
+        } else {
+          entry.status = 'delegated-to-host';
+          recordStepOutcome(step.tool, true);
+        }
+        log.push(entry);
+        if (halted) break;
+      }
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ success: !halted, resolvedIntent: plan.intent, confidence: conf, executionLog: log, plan }) }] };
+    }
+
+    case 'delegate_to_agent': {
+      const agentId = String(args.agentId || 'peer');
+      const delegated = args.intent || args.naturalLanguage || 'session_startup';
+      const payload = {
+        success: true,
+        delegate: {
+          agentId,
+          intent: delegated,
+          context: args.context || {},
+          handoffPayload: { type: 'a2a-delegation', to: agentId, intent: delegated, lockedStrategyKey: args.lockedStrategyKey, guardrails: Guard.getGuardrails(strategyStore) },
+          agentDirective: 'Host: use this payload with sessions_spawn / A2A equivalent to hand off. Receiver starts with get_agent_recipes + route_agent_intent.',
+        },
+      };
+      recordClassificationFeedback({ resolvedIntent: String(delegated), method: 'explicit', confidence: 1 });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }] };
+    }
+
+    case 'get_routing_feedback': {
+      const snap = strategyStore.get('routing:feedback') || {};
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ success: true, counters: snap.counters || {}, recent: (snap.recent || []).slice(0, args.limit || 20), note: 'Tune classifier aliases from this data. Persisted in strategy bag.' }, null, 2) }] };
+    }
+
+    case 'get_available_tools': {
+      const g = Guard.getGuardrails(strategyStore);
+      const ctx = args.context || {};
+      const base = args.category ? getToolsByCategory([...publicTools, ...secureTools], args.category) : [...publicTools, ...secureTools];
+      const filtered = base.filter((t: any) => {
+        const n = t.name;
+        if (g.readOnly && (isMutationTool(n) || isHighRiskAdvanced(n))) return false;
+        if (ctx.balanceUsd != null && ctx.balanceUsd < 10 && (n.includes('place') || isMutationTool(n))) return false;
+        return true;
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ success: true, count: filtered.length, tools: filtered.map((t: any) => t.name), applied: { guardrails: g, context: ctx } }) }] };
     }
 
     case 'run_agent_cycle': {

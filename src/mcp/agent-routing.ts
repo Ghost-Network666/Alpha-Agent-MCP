@@ -25,7 +25,7 @@ export function buildAgentRoutingPrompt(): string {
 
 ## Mandatory startup (every session)
 1. Built-in routing is always on — optional configure_agent_routing({ intent: "<goal>" })
-2. tools/call fetch_sdk_readme — confirm routing.sdkMethod per native tool (SDK README is canonical)
+2. consult mcp_llms_full_guide prompt (links canonical SDK README URL) — confirm routing.sdkMethod per native tool (SDK README is canonical)
 3. prompts/get never_guess_contract + agent_routing
 4. Call native tools — each response includes routing.toolPurpose + routing.nextTools (built-in, no extra meta calls)
 5. Re-call tools/list after load_agent_profile when plan includes it
@@ -36,7 +36,7 @@ ${intents}
 
 Trading rule: intent picks tools only. place_limit_order / place_optimized_reward_order need YOUR numeric price, size, side.
 
-## Exposure ladder (~145 handlers)
+## Exposure ladder (currently 110 tools after full profile; live tools/list is truth)
 | Step | Tool |
 |------|------|
 | Default | tools/list — tier-1 (~${TIER1_CORE_TOOL_NAMES.length} tools) |

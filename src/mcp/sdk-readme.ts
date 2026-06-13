@@ -15,9 +15,17 @@ export async function fetchLiveSdkReadme(): Promise<{
   fromCache: boolean;
   canonicalUrl: string;
 }> {
-  const { createRequire } = await import('module');
-  const require = createRequire(import.meta.url);
-  const installedVersion = String(require('@polymarket/client/package.json').version ?? 'unknown');
+  let installedVersion = 'unknown';
+  try {
+    const { createRequire } = await import('module');
+    const require = createRequire(import.meta.url);
+    // Safe access: some @polymarket/client builds restrict direct package.json via "exports" map.
+    // Fallback keeps the fetcher functional; version is advisory only. Primary truth is the canonical GitHub URL.
+    const pkg = require('@polymarket/client/package.json');
+    installedVersion = String(pkg?.version ?? 'unknown');
+  } catch {
+    installedVersion = 'unknown (package.json not directly readable under current SDK exports)';
+  }
   const canonicalUrl = 'https://github.com/Polymarket/ts-sdk/blob/main/README.md';
 
   if (cache && Date.now() - new Date(cache.fetchedAt).getTime() < TTL_MS) {

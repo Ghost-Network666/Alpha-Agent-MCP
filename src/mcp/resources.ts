@@ -355,42 +355,35 @@ export class ResourceManager {
 
       case 'sdk': {
         if (parsed.subPath === 'readme') {
-          try {
-            const live = await fetchLiveSdkReadme();
-            const header = `# Live SDK README (@polymarket/client@${live.installedVersion})\nSource: ${live.sourceUrl}\nFetched: ${live.fetchedAt}\nCanonical: ${live.canonicalUrl}\n\n`;
-            return {
-              contents: [{ uri, mimeType: 'text/markdown', text: header + live.markdown }],
-            };
-          } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : String(e);
-            const fallback = buildMcpLlmsGuide();
-            return {
-              contents: [{
-                uri,
-                mimeType: 'text/markdown',
-                text: `# SDK README fetch failed\n${msg}\n\n## MCP fallback guide\n\n${fallback}`,
-              }],
-            };
-          }
+          // Per design: MCP does not serve or host full/stale .MD content via tools or resources.
+          // Agents must consult the canonical (kept up-to-date) SDK README at the URL first.
+          // The mcp_llms_full_guide prompt (and polymarket://mcp/llms.txt) provides the MCP-specific mappings on top of it.
+          const guide = buildMcpLlmsGuide();
+          const pointer = [
+            'SDK source of truth (primary agent instructions): https://github.com/Polymarket/ts-sdk/blob/main/README.md',
+            '(Call prompts/get mcp_llms_full_guide to receive the full guide that starts with the SDK README + exact MCP tool mappings for every concept.)',
+            '',
+            'This resource returns a pointer only. MCP provides no fetch_sdk_readme tool and does not dump full Markdown bodies.',
+            '',
+            guide
+          ].join('\n');
+          return {
+            contents: [{ uri, mimeType: 'text/markdown', text: pointer }],
+          };
         }
         throw new Error(`Unknown sdk resource: ${uri}`);
       }
 
       case 'mcp': {
         if (parsed.subPath === 'llms.txt' || parsed.subPath === 'usage.md') {
+          // Serve the MCP mappings guide. Never attach full external SDK .MD.
           const guide = buildMcpLlmsGuide();
-          let sdkBlock = '';
-          try {
-            const live = await fetchLiveSdkReadme();
-            sdkBlock = `\n\n---\n\n## Live SDK README (attached)\n@polymarket/client@${live.installedVersion} — ${live.sourceUrl}\n\n${live.markdown.slice(0, 120_000)}\n`;
-          } catch {
-            sdkBlock = '\n\n---\n\n(Live SDK README unavailable — use tools/call fetch_sdk_readme or resource polymarket://sdk/readme)\n';
-          }
+          const pointer = guide + '\n\n---\n\nSDK instructions: https://github.com/Polymarket/ts-sdk/blob/main/README.md (linked and required first in the mcp_llms_full_guide prompt above). MCP resources/tools serve mappings + cards only; do not use for full .MD files.';
           return {
             contents: [{
               uri,
               mimeType: 'text/markdown',
-              text: guide + sdkBlock,
+              text: pointer,
             }],
           };
         }

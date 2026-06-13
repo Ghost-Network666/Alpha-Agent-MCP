@@ -13,7 +13,6 @@ export const COMPACT_TOOL_DESCRIPTIONS: Record<string, string> = {
   list_tool_categories: '[Meta] List categories for get_tools_by_category.',
   get_tools_by_category: '[Meta] Register one category; re-call tools/list.',
   get_mcp_usage: '[Meta] MCP tool-call stats this session.',
-  fetch_sdk_readme: '[Meta] Live upstream TS SDK README text.',
   run_agent_cycle: '[Meta] Legacy goal enum → intent route plan.',
   discover_topic: '[Discovery] Topic → events + markets + tokenIds.',
   fetch_market: '[Discovery] Market by id/slug/url/tokenId.',

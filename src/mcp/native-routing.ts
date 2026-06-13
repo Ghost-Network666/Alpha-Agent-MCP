@@ -29,7 +29,7 @@ export type NativeToolRouting = {
   toolPurpose: string;
   sdkMethod: string | null;
   sdkReadme: string;
-  sdkReadmeTool: 'fetch_sdk_readme';
+  sdkReadmeUrl: 'https://github.com/Polymarket/ts-sdk/blob/main/README.md',
   tradingRule: string;
   nextTools: CycleStep[];
   loopPlan?: CycleStep[];
@@ -72,7 +72,7 @@ function extractTokenId(
 function toolPurpose(name: string): string {
   return (
     COMPACT_TOOL_DESCRIPTIONS[name] ||
-    `[Tool] Native SDK-backed handler. See fetch_sdk_readme + get_agent_recipes for schema.`
+    `[Tool] Native SDK-backed handler. See mcp_llms_full_guide prompt (links SDK README URL) + get_agent_recipes for schema.`
   );
 }
 
@@ -110,7 +110,7 @@ export function buildNextToolsForCall(
     return steps;
   }
 
-  if (toolName === 'fetch_sdk_readme' || toolName === 'get_agent_recipes') {
+  if (toolName === 'get_agent_recipes') {
     pushStep(steps, 'list_active_maker_reward_markets', { maxMinCostUsd: maxUsd }, 'Default rewards entry.', {
       n: order,
     });
@@ -118,7 +118,8 @@ export function buildNextToolsForCall(
   }
 
   if (toolName === 'get_strategies') {
-    pushStep(steps, 'fetch_sdk_readme', {}, 'Confirm SDK methods vs routing.sdkMethod.', { n: order });
+    // consult canonical SDK README URL (linked in mcp_llms_full_guide) instead of removed fetch tool
+    pushStep(steps, 'get_agent_recipes', {}, 'Confirm SDK methods vs routing via prompt guidance.', { n: order });
     pushStep(steps, 'list_active_maker_reward_markets', { maxMinCostUsd: maxUsd }, 'Start rewards loop.', {
       n: order,
     });
@@ -316,7 +317,7 @@ export function buildNativeRoutingBlock(
     toolPurpose: toolPurpose(toolName),
     sdkMethod: sdkMethodFor(toolName),
     sdkReadme: SDK_README_URL,
-    sdkReadmeTool: 'fetch_sdk_readme',
+    sdkReadmeUrl: 'https://github.com/Polymarket/ts-sdk/blob/main/README.md',
     tradingRule: TRADING_RULE,
     nextTools,
     loopPlan,

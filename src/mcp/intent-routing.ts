@@ -55,7 +55,8 @@ export type AgentIntent =
   | 'automation_orchestration';
 
 export type IntentRouteRequest = {
-  intent: AgentIntent;
+  intent?: AgentIntent; // optional when naturalLanguage is provided for built-in NLR classification
+  naturalLanguage?: string; // Raw user/agent NL goal. When provided (and no strong explicit intent), the router performs lightweight heuristic classification to resolve intent + confidence. No LLM call.
   topic?: string;
   tokenId?: string;
   market?: string;
@@ -68,7 +69,7 @@ export type IntentRouteRequest = {
   externalSignals?: any[]; // Optional host-provided (x_search, on-chain analytics, etc.) for narrow research fusion steps
 };
 
-/** MCP tool name → SDK README method (confirm via fetch_sdk_readme before first use). */
+/** MCP tool name → SDK README method (confirm via the canonical URL https://github.com/Polymarket/ts-sdk/blob/main/README.md linked in mcp_llms_full_guide prompt before first use). */
 export const MCP_TO_SDK_METHOD: Record<string, string> = {
   place_limit_order: 'placeLimitOrder',
   place_optimized_reward_order: 'placeLimitOrder (postOnly GTC via MCP wrapper)',
@@ -85,6 +86,7 @@ export const MCP_TO_SDK_METHOD: Record<string, string> = {
 export type IntentRoutePlan = {
   success: boolean;
   intent: AgentIntent;
+  resolvedIntent?: AgentIntent; // when classification happened
   phase: 'route';
   steps: CycleStep[];
   profile?: string;
@@ -93,12 +95,17 @@ export type IntentRoutePlan = {
   nextTools: string[];
   agentDirective: string;
   tradingRule: string;
-  lockedStrategyKey?: string; // If provided or derivable, the entire plan is locked to this composite key from the strategy store
-  priceMovementCondition?: string; // Derived or passed context for real-time price movement rules
-  researchSource?: string; // e.g. "alpha_report + externalSignals + farmability" for traceability
+  lockedStrategyKey?: string;
+  priceMovementCondition?: string;
+  researchSource?: string;
+  // NLR / confidence fields (gap closure for Bankr-like natural language routing)
+  confidence?: number; // 0-1. High when explicit intent, computed heuristic when naturalLanguage used.
+  classificationMethod?: 'explicit' | 'heuristic' | 'fallback';
+  matchedKeywords?: string[];
+  naturalLanguage?: string; // echoed when used
   sdkAlignment: {
-    readmeTool: string;
-    readmeResource: string;
+    readmeUrl: string;
+    readmeResource?: string;
     rule: string;
     mcpToSdk: typeof MCP_TO_SDK_METHOD;
   };
@@ -250,9 +257,9 @@ export const INTENT_REGISTRY: Record<
 
   // === Completeness intents (added to satisfy "all MCP tools have intent language routing" — no commits until 100% coverage) ===
   meta_introspection_full: {
-    summary: 'Complete never-guess path for all Meta/introspection tools (categories, recipes, doctor, usage, search, load profile, sdk readme, route/configure). Start every deep session here or via session_startup. After any meta tool response, re-call route_agent_intent with a goal intent or get_strategies.',
+    summary: 'Complete never-guess path for all Meta/introspection tools (categories, recipes, doctor, usage, search, load profile, route/configure). Start every deep session here or via session_startup (prompts/get mcp_llms_full_guide for SDK URL + mappings first). After any meta tool response, re-call route_agent_intent with a goal intent or get_strategies.',
     profile: 'automation',
-    primaryTools: ['list_tool_categories', 'get_tools_by_category', 'get_agent_recipes', 'search_tools', 'mcp_doctor', 'get_mcp_usage', 'fetch_sdk_readme', 'load_agent_profile', 'route_agent_intent', 'configure_agent_routing'],
+    primaryTools: ['list_tool_categories', 'get_tools_by_category', 'get_agent_recipes', 'search_tools', 'mcp_doctor', 'get_mcp_usage', 'load_agent_profile', 'route_agent_intent', 'configure_agent_routing'],
   },
   discovery_full: {
     summary: 'Route for broad discovery surface: list_markets, fetch_market, discover_topic, search, list_events, fetch_event + all taxonomy. Use this when you need any discovery tool without guessing parameters or order.',
@@ -325,6 +332,100 @@ export const INTENT_REGISTRY: Record<
   },
 };
 
+/**
+ * Lightweight heuristic NLR classifier (no LLM, no external calls).
+ * Used by route_agent_intent when naturalLanguage is supplied.
+ * Matches against intent keys, summaries, and curated aliases/keywords from the registry.
+ * Returns best intent + confidence (0-1). Fallback to session_startup with low conf.
+ */
+export function classifyNaturalLanguageToIntent(nl: string): {
+  intent: AgentIntent | null;
+  confidence: number;
+  method: 'heuristic' | 'fallback';
+  matchedKeywords: string[];
+} {
+  if (!nl || typeof nl !== 'string') {
+    return { intent: 'session_startup', confidence: 0.2, method: 'fallback', matchedKeywords: [] };
+  }
+  const text = nl.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
+  const words = text.split(/\s+/).filter(Boolean);
+
+  type Candidate = { intent: AgentIntent; score: number; kws: string[] };
+  const candidates: Candidate[] = [];
+
+  for (const [intentKey, reg] of Object.entries(INTENT_REGISTRY) as [AgentIntent, any][]) {
+    let score = 0;
+    const kws: string[] = [];
+
+    // direct intent name match (with underscores or spaces)
+    const intentName = intentKey.replace(/_/g, ' ');
+    if (text.includes(intentName)) {
+      score += 0.55;
+      kws.push(intentName);
+    }
+    if (text.includes(intentKey)) {
+      score += 0.55;
+      kws.push(intentKey);
+    }
+
+    // summary keywords
+    const summary = (reg.summary || '').toLowerCase();
+    const summaryTokens = summary.split(/\W+/).filter((w: string) => w.length > 3);
+    for (const tok of summaryTokens) {
+      if (words.includes(tok) || text.includes(tok)) {
+        score += 0.12;
+        if (!kws.includes(tok)) kws.push(tok);
+      }
+    }
+
+    // curated aliases for common NL phrases (expandable)
+    const aliasMap: Partial<Record<AgentIntent, string[]>> = {
+      rewards_farm: ['reward', 'farm', 'maker', 'lp reward', 'earn maker', 'scoring order', 'place maker'],
+      weather_alpha: ['weather', 'uk weather', 'forecast', 'temperature'],
+      heartbeat_locked_autonomy: ['heartbeat', 'locked', 'autonomy', 'full loop', 'autonomous', 'orchestrate'],
+      session_startup: ['start', 'startup', 'begin', 'initial', 'first time', 'hello', 'new session'],
+      mispricing_flip: ['misprice', 'arbitrage', 'edge', 'bayesian', 'external signal'],
+      trading_monitor: ['monitor', 'positions', 'open orders', 'portfolio'],
+      discovery_scan: ['discover', 'find market', 'search topic', 'list markets'],
+      alpha_scan: ['alpha', 'report', 'rank', 'opportunity'],
+      place_limit_explicit: ['place limit', 'explicit order', 'limit order'],
+      place_reward_maker: ['place reward', 'maker order', 'optimized reward'],
+    };
+    const aliases = aliasMap[intentKey] || [];
+    for (const a of aliases) {
+      if (text.includes(a)) {
+        score += 0.35;
+        kws.push(a);
+      }
+    }
+
+    // primary tools mention
+    const prim = (reg.primaryTools || []).join(' ').toLowerCase();
+    for (const w of words) {
+      if (prim.includes(w) && w.length > 4) {
+        score += 0.08;
+      }
+    }
+
+    if (score > 0.1) {
+      candidates.push({ intent: intentKey, score: Math.min(0.98, score), kws });
+    }
+  }
+
+  if (candidates.length === 0) {
+    return { intent: 'session_startup', confidence: 0.35, method: 'fallback', matchedKeywords: [] };
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  return {
+    intent: best.intent,
+    confidence: best.score,
+    method: 'heuristic',
+    matchedKeywords: best.kws.slice(0, 6),
+  };
+}
+
 const TRADING_RULE =
   'Intent routing picks tools only. Trading requires explicit numeric price, size, and side on place_limit_order / place_optimized_reward_order — never natural-language trade intent.';
 
@@ -342,7 +443,34 @@ function goalFromIntent(intent: AgentIntent, req: IntentRouteRequest): CycleGoal
 }
 
 export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
-  const intent = req.intent;
+  // NL → intent classification (gap 2): if naturalLanguage provided, run heuristic classifier.
+  // Explicit intent (if supplied) wins with confidence 1.0. Otherwise use classification.
+  let intent: AgentIntent = req.intent as AgentIntent;
+  let confidence = 1.0;
+  let classificationMethod: 'explicit' | 'heuristic' | 'fallback' = 'explicit';
+  let matchedKeywords: string[] = [];
+
+  if (req.naturalLanguage && (!intent || String(req.naturalLanguage).length > 5)) {
+    const cls = classifyNaturalLanguageToIntent(req.naturalLanguage);
+    if (cls.intent) {
+      if (!req.intent) {
+        intent = cls.intent;
+      }
+      confidence = cls.confidence;
+      classificationMethod = cls.method;
+      matchedKeywords = cls.matchedKeywords;
+    } else {
+      confidence = cls.confidence || 0.3;
+      classificationMethod = 'fallback';
+    }
+  }
+
+  if (!intent) {
+    intent = 'session_startup';
+    confidence = Math.min(confidence, 0.4);
+    classificationMethod = 'fallback';
+  }
+
   const reg = INTENT_REGISTRY[intent];
   const steps: CycleStep[] = [];
   let order = 1;
@@ -379,13 +507,13 @@ export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
   }
 
   if (intent === 'session_startup') {
-    push('fetch_sdk_readme', {}, 'Canonical SDK method names — confirm every routed tool against this.');
+    
     push('get_agent_recipes', {}, 'MCP tool shapes + intentRouting registry + knownGotchas.');
     push('get_strategies', {}, 'Load or auto-seed session rules.');
     push(
       'route_agent_intent',
       { intent: 'rewards_farm' },
-      'Re-call with your real intent after reading SDK readme + recipes.'
+      'Re-call with your real intent after consulting mcp_llms_full_guide (SDK README URL) + get_agent_recipes.'
     );
   } else if (intent === 'rewards_farm') {
     push('load_agent_profile', { profile: 'rewards' }, 'Register intelligence + reward tools; re-call tools/list.');
@@ -511,7 +639,11 @@ export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
     // The strict "stay locked only to this key + obey its priceMovementRules exclusively" behavior is **off by default**.
     // The host (Hermes or OpenClaw) turns the lock on/off for a composite key using the enable/disable intents (or direct update_strategy).
     // Plan always loads the strategy first so the executing host can see the current strategyLock flag.
-    push('get_strategies', lockedStrategyKey ? { tokenId: lockedStrategyKey } : {}, 'Load the exact locked per-market:volume strategy (volumeTier, strategyLock flag, priceMovementRules, entry/exit/sizing/drawdown, prior signals, lastPeg). ALWAYS first every host heartbeat tick. Check strategy.strategyLock after this step.');
+    push('get_strategies', lockedStrategyKey ? { tokenId: lockedStrategyKey } : {}, 'Load the exact locked per-market:volume strategy (volumeTier, strategyLock flag, priceMovementRules, entry/exit/sizing/drawdown, prior signals, lastPeg). ALWAYS first every host heartbeat tick. Check strategy.strategyLock after this step. (Qualifier: strategy)');
+    push('get_balance_allowance', { assetType: 'COLLATERAL' }, 'USDC pre-flight qualifier for autonomous mutation guard. (Qualifier: balance)');
+    push('get_order_book', tokenRef, 'Live book depth qualifier for autonomous safety block. (Qualifier: book)');
+    push('get_spread', tokenRef, 'Spread health qualifier for autonomous mutation guard. (Qualifier: spread)');
+    push('route_agent_intent', { intent: 'heartbeat_locked_autonomy', lockedStrategyKey: lockedStrategyKey || '<composite>', heartbeat: true }, 'Re-affirm routed plan (Qualifier: route). Heartbeat MUST only execute steps from this plan — never guess chains.');
     push('list_tool_categories', {}, 'Discover research categories (External/Intelligence/Discovery) for signals for THIS key.');
     push('get_tools_by_category', { category: 'Intelligence' }, 'Load narrow specialized research tools. Host orchestrates narrow mandates on its heartbeat — MCP never runs continuous agents.');
     // Narrow research sequence (always useful for signals on the key; the "must stay only here" is conditional on the lock flag):
@@ -562,7 +694,7 @@ export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
 
   // === Completeness branches for the new intents (every native tool now has a deterministic route_agent_intent path + rich agentDirective + nextTools) ===
   if (intent === 'meta_introspection_full') {
-    push('fetch_sdk_readme', {}, 'Mandatory first for any deep work — confirm exact SDK shapes for every tool you will route to.');
+    
     push('get_agent_recipes', {}, 'Source of truth for full intent registry, native tool shapes, coverage claim, and never-guess contract.');
     push('get_strategies', {}, 'Current rules / lock state / persisted signals before any introspection.');
     push('list_tool_categories', {}, 'Discover the full categorized surface (Meta, Intelligence, Discovery, Rewards, Trading, Strategy, Advanced, Weather, Automation).');
@@ -572,7 +704,7 @@ export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
     push('get_mcp_usage', {}, 'Observability for this meta cycle.');
     push('search_tools', { query: 'cancel', limit: 5 }, 'Example keyword search across the entire surface.');
   } else if (intent === 'discovery_full') {
-    push('fetch_sdk_readme', {}, 'Confirm listMarkets, listEvents, search, discover_topic etc. shapes.');
+    
     push('get_agent_recipes', {}, 'Recipes + full routing coverage.');
     push('get_strategies', {}, 'Prefs/filters before broad scan.');
     push('load_agent_profile', { profile: 'discovery' }, 'Surface all Discovery category tools.');
@@ -725,12 +857,13 @@ export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
         : intent === 'heartbeat_locked_autonomy' || (lockedStrategyKey && req.heartbeat)
           ? `LOCK CHECK: After the get_strategies(locked) step, inspect the loaded strategy for this composite key. If strategy.strategyLock === true (the host has turned the lock on via enable_locked_autonomy or direct update_strategy), then: LOCKED TO strategyKey=${lockedStrategyKey || '<the composite key>'}. Hermes (host) is the brain and this is its heartbeat-driven loop. YOU (the agent) STAY LOCKED to this exact market/volume tier ONLY for this tick. Real-time price movement: after get_farmability, compare live mid/competitionSignal/drift against the priceMovementRules (driftThreshold, requoteOnlyOnDrift, etc.) loaded from get_strategies(locked). If condition met per rules, derive explicit price from the nearMid or adjusted mid in the farmability card + your locked entry rules, size from suggest_qualified_size, then place with the exact numbers. Research (alpha + externalSignals, preferably the narrow ones) feeds this locked key only. Execution only for this key. After place or decision, update_strategy under THIS exact key with new peg/state. Execute the steps in order. DO NOT deviate to any other market or ask the human. ${TRADING_RULE} Host (Hermes) triggers this planner on every native heartbeat tick. If strategy.strategyLock is false or absent (default = off), the lock is disengaged: use the research/signals from this key as inputs, but the host brain may freely choose other keys, broader discovery, or different routing. No hard "stay only here" enforcement.`
           : (intent.includes('_full') || intent.includes('_deep') || intent.includes('_complete') || intent.includes('taxonomy') || intent.includes('sports') || intent.includes('leader') || intent.includes('comments') || intent.includes('onchain') || intent.includes('gasless') || intent.includes('advanced_account') || intent.includes('automation_orchestration'))
-            ? `COMPLETE INTENT LANGUAGE ROUTING for ${intent}. This plan gives the exact deterministic sequence of native MCP tools (every tool on the surface is covered by some intent). Execute steps in order via tools/call. After any step, re-call route_agent_intent({intent: "<next logical>"}) or get_strategies() — NEVER guess the next tool name, parameters, or sequence from descriptions or memory. Load get_agent_recipes + fetch_sdk_readme early and often. ${TRADING_RULE} All native tools now have intent-language paths so agents never guess.`
+            ? `COMPLETE INTENT LANGUAGE ROUTING for ${intent}. This plan gives the exact deterministic sequence of native MCP tools (every tool on the surface is covered by some intent). Execute steps in order via tools/call. After any step, re-call route_agent_intent({intent: "<next logical>"}) or get_strategies() — NEVER guess the next tool name, parameters, or sequence from descriptions or memory. Load get_agent_recipes + consult the canonical SDK README URL (https://github.com/Polymarket/ts-sdk/blob/main/README.md , as linked in mcp_llms_full_guide) early and often. ${TRADING_RULE} All native tools now have intent-language paths so agents never guess.`
             : `Intent "${intent}": execute steps in order via tools/call. DO NOT ask the human for menus. Re-call route_agent_intent for the next phase instead of guessing tools. ${TRADING_RULE}`;
 
   return {
     success: true,
     intent,
+    resolvedIntent: intent,
     phase: 'route',
     steps,
     profile: reg.profile,
@@ -740,7 +873,7 @@ export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
     agentDirective,
     tradingRule: TRADING_RULE,
     sdkAlignment: {
-      readmeTool: 'fetch_sdk_readme',
+      readmeUrl: 'https://github.com/Polymarket/ts-sdk/blob/main/README.md',
       readmeResource: 'polymarket://sdk/readme',
       rule:
         'Before the first tools/call on a routed step, confirm the SDK README method in mcpToSdk matches get_agent_recipes inputSchema — never invent parameters.',
@@ -750,6 +883,11 @@ export function buildIntentRoute(req: IntentRouteRequest): IntentRoutePlan {
     lockedStrategyKey,
     priceMovementCondition,
     researchSource,
+    // NLR enhancements (confidence gating + naturalLanguage support)
+    confidence,
+    classificationMethod,
+    matchedKeywords,
+    naturalLanguage: req.naturalLanguage,
     note: 'Deterministic routing only — host LLM runs each step in order. Re-call route_agent_intent when the goal changes. When lockedStrategyKey is present, treat the entire plan as locked to that composite (market:volume) entry from the strategy store. Always get_strategies for the exact key first. COMPLETE COVERAGE: Every native MCP tool (public, secure, intelligence, strategy, advanced, meta, weather, on-chain, cancels, prepares, etc.) appears in at least one intent plan returned by route_agent_intent (see INTENT_REGISTRY + the plans above). Agents MUST use route_agent_intent (or get_agent_recipes first) to obtain the exact sequence + agentDirective + nextTools. Never guess a tool name or parameter order from descriptions alone. This is the "all tools have intent language routing" contract.',
   };
 }

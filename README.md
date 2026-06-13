@@ -4,7 +4,7 @@
 
 This is an MCP server for the CLOB prediction market platform, designed for **Grok Build**, **Hermes**, and **OpenClaw** (stdio MCP — same `dist/mcp.js` entrypoint).
 
-It is a **lightweight MCP**: tier-1 default **28** tools in `tools/list`, **`route_agent_intent`** for goal→native-tool routing (never trade-by-intent), plus `load_agent_profile` / `get_tools_by_category` for the full **~145** handlers — nothing removed. Complete **Resources + Subscriptions**:
+It is a **lightweight MCP**: tier-1 default (~20-30 core daily tools in `tools/list` per live audit), **`route_agent_intent`** for goal→native-tool routing (never trade-by-intent), plus `load_agent_profile` / `get_tools_by_category` for the full surface (currently **110** tools visible after loading "full" profile or all categories — treat live `tools/list` + categories as truth; the exact number can shift slightly with the underlying SDK). Complete **Resources + Subscriptions**:
 
 - Market + event discovery, tags, series, sports, teams
 - Full order lifecycle (limit/market + every cancel variant)
@@ -70,13 +70,12 @@ Auth note: API keys must be derived from the EOA private key. Every order payloa
 
 **Hermes is the brain. Heartbeat is the core.** Hermes owns primary strategy, its native heartbeat.md / OpenClaw CLOB session liveness enforcement, the loop, and control. The MCP is the integration surface (send_heartbeat hook for host heartbeat.md compliance + route_agent_intent / run_agent_cycle with lockedStrategyKey as heartbeat-callable complete intent routing planners + supporting strategy bag for composite per-market:volume rules + signals with host externalSignals). The host drives calls from its heartbeat/resource events so the MCP remains active and the consuming agent never has to guess.
 
-**SDK source of truth (fetch, do not guess):** https://github.com/Polymarket/ts-sdk/blob/main/README.md  
-Native MCP tool: `fetch_sdk_readme` (cached HTTP) or resource `polymarket://sdk/readme`. Confirm routed tools against `sdkAlignment.mcpToSdk` from `route_agent_intent` before `place_*`.
+**SDK source of truth (consult first, do not guess):** https://github.com/Polymarket/ts-sdk/blob/main/README.md (linked first in the `mcp_llms_full_guide` prompt + `polymarket://mcp/llms.txt`; MCP provides no tools or resources that serve full .MD content). Confirm routed tools against `sdkAlignment.mcpToSdk` from `route_agent_intent` before `place_*`.
 
 **Agent startup (every host heartbeat-driven session):**
-1. On Hermes heartbeat/resource tick: `send_heartbeat` first (per host heartbeat.md contract) then `route_agent_intent({ intent: "session_startup", heartbeat: true })` — runs `fetch_sdk_readme` + `get_agent_recipes` + `get_strategies(locked?)`
+1. On Hermes heartbeat/resource tick: `send_heartbeat` first (per host heartbeat.md contract) then `route_agent_intent({ intent: "session_startup", heartbeat: true })` — runs `get_agent_recipes` + `get_strategies(locked?)` (consult `prompts/get mcp_llms_full_guide` which starts with the canonical SDK README URL + MCP mappings)
 2. `route_agent_intent({ intent: "rewards_farm"|"weather_alpha"|..., lockedStrategyKey, heartbeat: true })` — execute every returned step in order (plans carry the lock + explicit next native calls)
-3. Prompts: `agent_routing`, `never_guess_contract`, `mcp_tool_structure_and_categories`, `mcp_llms_full_guide`
+3. Prompts: `agent_routing`, `never_guess_contract`, `mcp_tool_structure_and_categories`, `mcp_llms_full_guide` (SDK URL first)
 
 See `AGENTS.md` and `docs/HERMES_AGENT_BOOTSTRAP.md` (paste into `~/.hermes/AGENTS.md` / `SOUL.md`). Prefer `discover_topic({ topic })` over bare category filters. `load_agent_profile` when the route plan says so, then re-call `tools/list`. Rules for the locked composite live in the strategy bag (`get_strategies` / `update_strategy`); Hermes owns the primary brain and evolves them on its heartbeat ticks.
 
@@ -100,7 +99,7 @@ hermes mcp add polymarket \
   --tools-include "get_agent_recipes,discover_topic,fetch_market,get_strategies,list_positions,get_balance_allowance"
 ```
 
-Hermes `--tools-include` is optional: the MCP exposes **tier-1** (~28 tools) including `route_agent_intent` and `fetch_sdk_readme`. Omit the flag to use that default. For full flows, let the agent call `route_agent_intent` (it includes `load_agent_profile` when needed) then re-call `tools/list`.
+Hermes `--tools-include` is optional: the MCP exposes **tier-1** (core daily + `route_agent_intent`). Omit the flag to use that default. For full flows, let the agent call `route_agent_intent` (it includes `load_agent_profile` when needed) then re-call `tools/list`.
 
 After registration:
 
@@ -218,7 +217,7 @@ Start a **new Grok Build session** after every rebuild so the host reloads `dist
 
 User-level config can mirror the same server in `~/.grok/config.toml`. WSL users may need `bash -lc` and an explicit `node` path (see your local `.grok/config.toml`).
 
-**Agent contract:** Built-in routing on every native tool → `fetch_sdk_readme` (https://github.com/Polymarket/ts-sdk/blob/main/README.md) → explicit trade numbers on `place_*`.
+**Agent contract:** Built-in routing on every native tool. Consult `prompts/get mcp_llms_full_guide` (canonical SDK README URL first at https://github.com/Polymarket/ts-sdk/blob/main/README.md + mappings) → explicit trade numbers on `place_*` (never intent).
 
 ## OpenClaw
 
@@ -370,14 +369,14 @@ This is the correct, future-proof "subscribe" implementation.
 
 | Layer | How to see it | Count |
 |-------|----------------|-------|
-| Tier-1 (default `tools/list`) | Connect — no extra calls | **28** daily drivers + **`route_agent_intent`** + **`fetch_sdk_readme`** |
-| Full surface | `route_agent_intent` (may call `load_agent_profile`) or categories | **~145** handlers (Advanced separate) |
+| Tier-1 (default `tools/list`) | Connect — no extra calls | Core daily drivers + **`route_agent_intent`** |
+| Full surface | `route_agent_intent` (may call `load_agent_profile`) or categories | **110** tools (live after full profile load; treat `tools/list` as truth) |
 
-**Tier-1 includes:** `route_agent_intent`, `fetch_sdk_readme`, `get_agent_recipes`, `discover_topic`, `search_tools`, `load_agent_profile`, strategy store, `fetch_market`, `list_active_maker_reward_markets`, `get_farmability`, `get_order_book`, `get_spread`, `place_limit_order`, `place_optimized_reward_order`, trading/account meta tools, `get_uk_weather_forecast`.
+**Tier-1 includes:** `route_agent_intent`, `get_agent_recipes`, `discover_topic`, `search_tools`, `load_agent_profile`, strategy store, `fetch_market`, `list_active_maker_reward_markets`, `get_farmability`, `get_order_book`, `get_spread`, `place_limit_order`, `place_optimized_reward_order`, trading/account meta tools, `get_uk_weather_forecast`.
 
-**Routing:** `route_agent_intent({ intent })` returns ordered `steps[]` + `sdkAlignment` (MCP↔SDK README). Intent does **not** place orders — explicit `price`/`size`/`side` required.
+**Routing:** `route_agent_intent({ intent })` returns ordered `steps[]` + `sdkAlignment` (MCP↔SDK README URL). Intent does **not** place orders — explicit `price`/`size`/`side` required.
 
-**SDK README:** https://github.com/Polymarket/ts-sdk/blob/main/README.md via `fetch_sdk_readme` or `polymarket://sdk/readme`.
+**SDK README:** https://github.com/Polymarket/ts-sdk/blob/main/README.md (consult first via `prompts/get mcp_llms_full_guide`; MCP does not serve full .MD via tools/resources).
 
 **Discovery:** `discover_topic({ topic })` — not `polymarket://markets` as a catalog.
 
