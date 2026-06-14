@@ -4,9 +4,13 @@
 
 This repo implements a lightweight MCP server for the CLOB prediction market platform. Consuming agents must **never have to guess**.
 
+**ONLY AGENTS.md IS USED** for the agent contract, "never guess", mandatory startup, recipes, routing, and all instructions. The project's README.md (https://github.com/Ghost-Network666/Alpha-MCP-TS/blob/main/README.md) has been removed from agent usage and references per request. All links, "see README", and mandatory flows now point exclusively here (AGENTS.md). The GitHub blob link for README.md is no longer active for agents.
+
+The project README.md file itself has been stubbed with an explicit redirect at the top: any visitor (or old link) is instructed to use *only* the AGENTS.md GitHub URL. The single relative reference in source (src/config/env.ts error message) was updated from "see README.md" to AGENTS.md. No other code, prompts, recipes, or docs reference the project's README for agent purposes. AGENTS.md is now the sole "been used" file.
+
 ## Mandatory First Reads (do these in order)
 
-1. Read `README.md`
+1. Read `AGENTS.md` (this file — the sole canonical document for agent rules, startup, "never guess" contract, and instructions. README.md is legacy and **not used**).
 2. Read critical sections of `src/mcp.ts` (lines 1-100 for imports/strategyStore/client setup; TIER1_CORE_TOOL_NAMES / ListToolsRequestSchema / currentlyExposedToolNames; GetPromptRequestSchema + entire content of the prompts especially `mcp_llms_full_guide` (SDK README first) and `agent_routing`; strategy store handlers; recordToolUsage + get_mcp_usage; agentDirective injection).
 3. Read `src/mcp/agent-meta.ts` (TIER1 list and profiles).
 4. Call MCP prompts: `prompts/get mcp_llms_full_guide` (primary canonical SDK + MCP mappings) and `prompts/get agent_routing`.

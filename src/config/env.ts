@@ -134,7 +134,7 @@ export function requireAuthEnv(): AuthEnv {
   console.error('\n  Recommended: add RELAYER keys (gasless) and/or BUILDER keys (attribution).');
   console.error('  Both can coexist — they create separate clients via getRelayerClient() / getBuilderClient().');
   console.error('\nRead-only commands like "discover" and "market" work without any .env file.');
-  console.error('\nFull instructions: see README.md → "Environment Setup"');
+  console.error('\nFull instructions: see AGENTS.md (primary and only agent contract file)');
   console.error('\nValidation errors:');
   console.error(errors);
   console.error('\n' + '='.repeat(70) + '\n');

@@ -1,25 +1,14 @@
-# MCP Server for CLOB Prediction Markets
+# Alpha-MCP-TS — DEPRECATED FOR AGENTS
 
-## What this MCP does
+**AGENTS: USE ONLY https://github.com/Ghost-Network666/Alpha-MCP-TS/blob/main/AGENTS.md**
 
-This is an MCP server for the CLOB prediction market platform, designed for **Grok Build**, **Hermes**, and **OpenClaw** (stdio MCP — same `dist/mcp.js` entrypoint).
+This README.md has been removed from all agent usage, links, and "been used" paths (per request). The sole canonical file for the "never guess" contract, mandatory reads, recipes, routing, prompts, startup, and all instructions is **AGENTS.md** (the GitHub link above).
 
-It is a **lightweight MCP**: tier-1 default (~20-30 core daily tools in `tools/list` per live audit), **`route_agent_intent`** for goal→native-tool routing (never trade-by-intent), plus `load_agent_profile` / `get_tools_by_category` for the full surface (currently **110** tools visible after loading "full" profile or all categories — treat live `tools/list` + categories as truth; the exact number can shift slightly with the underlying SDK). Complete **Resources + Subscriptions**:
+All prior references to this README (including relative "see README.md") have been excised. The project's GitHub blob URL for README.md is no longer active or referenced for agents or the MCP contract.
 
-- Market + event discovery, tags, series, sports, teams
-- Full order lifecycle (limit/market + every cancel variant)
-- CTF on-chain actions (split/merge/redeem) with Polygonscan links
-- Account (positions, activity, notifications, closed-only mode)
-- Leaderboards + public profiles
-- Rewards + earnings (view only)
-- Builder analytics + volume
-- Comments, market holders, open interest, live volume
-- Gasless ready check, order scoring
-- **Live WebSocket subscriptions via MCP Resources** (market books + user order/fill stream)
+For human/repo overview only (non-agents): see AGENTS.md for the full authoritative content, build, usage, and rules.
 
-**Every tool and resource response is pre-formatted for agents.** Zero raw SDK data ever reaches the LLM. Agents receive clean, display-ready cards (Title Case keys, price-as-`$0.73 (73%)`, order status with emojis ✅⏳🚫, full Polygonscan `Confirm` links, truncated addresses). The agent can print any response directly.
-
-All operations use only the official `@polymarket/client@beta` SDK to its fullest – CLOB (secure client for orders/placement), Gamma (public client for discovery/tags/events/markets), Data (secure client for positions/P&L/activity/portfolio), and WebSocket user/market streams (via client subscriptions bridged to MCP Resources). No external REST calls or raw HTTP ever. 100% coverage means wrapping the SDK clients/methods (including GammaClient/DataClient actions where exposed) as native MCP tools and resources. Real orders and on-chain CTF actions are production-proven.
+(Original detailed content moved / deprecated to enforce single source of truth in AGENTS.md.)
 
 ## Step 1 — Build
 
