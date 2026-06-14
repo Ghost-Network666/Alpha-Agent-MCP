@@ -66,6 +66,12 @@ export const RESOURCE_TEMPLATES = [
     description: 'Live fill status for a specific order. Subscribe to receive notifications when the order is partially or fully filled. Automatically started for every order placed via placement tools.',
     mimeType: 'application/json',
   },
+  {
+    uriTemplate: 'wallet://{address}/events',
+    name: 'Wallet Events (Live)',
+    description: 'Real-time wallet events for address (trades, order fills, split/merge/redeem). Supports subscribe for push via notifications/resources/updated. Authenticated user WS if own wallet (from credentials); public order-book derived or snapshot for third-party (use after extract_wallet_from_url + list_trades to discover markets). Zero-token monitoring.',
+    mimeType: 'application/json',
+  },
 ];
 
 // Static top-level resources
@@ -167,6 +173,11 @@ export class ResourceManager {
     }
     if (parts[0] === 'sdk' && parts[1] === 'readme') {
       return { type: 'sdk', subPath: 'readme' };
+    }
+    if (parts[0] === 'wallet' && parts.length >= 2) {
+      const address = parts[1];
+      const subPath = parts[2] || 'events';
+      return { type: 'wallet', tokenId: address, subPath };
     }
     return null;
   }
@@ -293,6 +304,21 @@ export class ResourceManager {
     }
     // Always notify activity for any user event
     notify('polymarket://user/activity');
+
+    // Wallet-specific events for subscribed wallet://<address>/events (filter by payload address for auth or public-derived)
+    const walletUris = Array.from(this.subscribedUris).filter((u) => u.startsWith('wallet://'));
+    if (walletUris.length > 0) {
+      const evPayload = event?.payload || event || {};
+      const evAddr = String(evPayload?.proxyWallet || evPayload?.maker || evPayload?.user || evPayload?.address || '').toLowerCase();
+      if (evAddr) {
+        for (const wuri of walletUris) {
+          if (wuri.toLowerCase().includes(evAddr)) {
+            notify(wuri);
+            logWs('Wallet event pushed for subscribed address', { uri: wuri, type: event?.type });
+          }
+        }
+      }
+    }
   }
 
   // ==================== PUBLIC API used by MCP handlers ====================
@@ -530,6 +556,43 @@ export class ResourceManager {
         };
       }
 
+      case 'wallet': {
+        const address = parsed.tokenId!;
+        const sec = await this.getSec().catch(() => null as any);
+        let items: any[] = [];
+        try {
+          if (sec) {
+            // Prefer listTrades if attached via allActions for maker-specific; fallback to filtered activity
+            if (typeof (sec as any).listTrades === 'function') {
+              const paginator = await (sec as any).listTrades({ maker: address, pageSize: 20 });
+              const page = await (typeof paginator.firstPage === 'function' ? paginator.firstPage() : paginator);
+              items = page?.items ?? [];
+            } else {
+              const paginator: Paginated<unknown> = await sec.listActivity({ pageSize: 30 });
+              const page = await (typeof paginator.firstPage === 'function' ? paginator.firstPage() : paginator);
+              const rawItems: any[] = (page && typeof page === 'object' && 'items' in page ? (page as any).items : (Array.isArray(page) ? page : [])) as any[];
+              items = rawItems.filter((a: any) => {
+                const p = a?.payload || a;
+                const addr = String(p?.proxyWallet || p?.maker || p?.user || '').toLowerCase();
+                return addr === address.toLowerCase();
+              });
+            }
+          }
+        } catch {}
+        const formatted = items.map((e: any) => F.formatActivity(e));
+        return {
+          contents: [{
+            uri,
+            mimeType: 'application/json',
+            text: JSON.stringify({
+              Address: address,
+              Events: formatted.length ? formatted : 'None',
+              Note: 'Live push on subscribe (auth wallet uses user WS; third-party: discover markets via list_trades({maker}) then market:// book resources for derived events). Pushes trades, fills, splits, merges, redeems where possible. Official @polymarket/client SDK WS only.',
+            }, null, 2),
+          }],
+        };
+      }
+
       default:
         throw new Error(`Unsupported resource: ${uri}`);
     }
@@ -559,6 +622,13 @@ export class ResourceManager {
         this.watchedOrders.add(parsed.tokenId);
         await this.ensureUserSubscription(uri).catch(() => {});
         logWs('Order fill watch registered', { orderId: parsed.tokenId });
+      } else if (parsed.type === 'wallet' && parsed.tokenId) {
+        // Authenticated if this matches the connected wallet (user WS will deliver events for it); for third-party use public market book derivation after discovering markets.
+        const currentWallet = process.env.DEPOSIT_WALLET_ADDRESS || process.env.WALLET_ADDRESS;
+        if (currentWallet && parsed.tokenId.toLowerCase() === currentWallet.toLowerCase()) {
+          await this.ensureUserSubscription(uri).catch(() => {});
+        }
+        logWs('Wallet resource subscribed (push for auth wallet; snapshot/public derivation for others)', { address: parsed.tokenId });
       }
       // markets list, leaderboards etc. are snapshot-only; subscription is accepted but produces infrequent/no updates
       logWs('Resource subscribed', { uri });

@@ -101,6 +101,11 @@ export function resetSecureClient(): void {
   secureClientInstance = null;
 }
 
+/** Reset public (Gamma/Data) client for full re-init on credential/profile switch. */
+export function resetPublicClient(): void {
+  publicClientInstance = null;
+}
+
 export async function setupGaslessWallet(): Promise<SecureClient<PublicActions, SecureActions>> {
   const current = await getSecureClient();
   const updated = await current.setupGaslessWallet();
