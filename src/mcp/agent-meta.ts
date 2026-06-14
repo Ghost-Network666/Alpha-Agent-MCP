@@ -58,10 +58,6 @@ export const TIER1_CORE_TOOL_NAMES: readonly string[] = [
 
 /** One-call bundles: registers category tools for the session (no capability removed). */
 export const AGENT_PROFILES: Record<string, { categories: string[]; description: string }> = {
-  weather: {
-    description: 'Topic discovery + UK forecast + trading + order book reads',
-    categories: ['Weather', 'Discovery', 'Trading', 'Analytics'],
-  },
   rewards: {
     description: 'Maker rewards scan, farmability, optimized place, full reward toolkit',
     categories: ['Intelligence', 'Rewards', 'Trading', 'Strategy'],
@@ -84,7 +80,7 @@ export const AGENT_PROFILES: Record<string, { categories: string[]; description:
   },
   full: {
     description: 'All categories except Advanced (load Advanced separately when needed)',
-    categories: ['Intelligence', 'Rewards', 'Strategy', 'Account', 'Utilities', 'Discovery', 'Trading', 'Analytics', 'Weather'],
+    categories: ['Intelligence', 'Rewards', 'Strategy', 'Account', 'Utilities', 'Discovery', 'Trading', 'Analytics'],
   },
 };
 

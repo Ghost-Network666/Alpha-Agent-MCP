@@ -26,7 +26,6 @@ import {
   getAgentRecipes,
   resolveTopicSlug,
 } from './data/discovery.js';
-import { weatherClient } from './data/weather.js';
 import {
   createApiKey,
   deriveApiKey,
@@ -61,7 +60,6 @@ import { compactTools } from './mcp/compact-tools.js';
 import { fetchLiveSdkReadme } from './mcp/sdk-readme.js';
 import { buildNeverGuessPrompt } from './mcp/never-guess.js';
 import { buildAgentCyclePlan } from './automation/agent-cycle.js';
-import { fetchCryptoSpotUsd } from './data/crypto.js';
 import { loadStrategyFile, saveStrategyFile } from './strategy/persist.js';
 import { resolveConditionIdForToken, resolveTokenIdFromToolArgs } from './utils/clob-token.js';
 import { normalizePlaceLimitOrderArgs } from './trading/place-limit-args.js';
@@ -1728,26 +1726,6 @@ const secureTools = [
     }
   },
   {
-    name: 'wait_seconds',
-    description: '[Utilities] Server-side backoff tool. One of the few tools exposed by default. Use it to respect rate limits and add discipline to your own loops. The MCP does not run autonomous loops for you — it gives you the building blocks.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        seconds: { 
-          type: 'number', 
-          minimum: 1, 
-          maximum: 300, 
-          description: 'How many seconds to wait (server-side). Typical values: 4-8 for rate limits, 30-120 for exhausted small-size opportunities.' 
-        },
-        reason: { 
-          type: 'string', 
-          description: 'Optional context (e.g. "rate limit from list_active", "no markets under maxMinSize:2", "waiting for price to reach 0.44 exit level")' 
-        }
-      },
-      required: ['seconds']
-    }
-  },
-  {
     name: 'suggest_qualified_size',
     description: '[Utilities] Advisory sizing helper (does NOT enforce anything). Given an intent and token, it looks up the reward program rules and returns a recommended size according to your defined policy:\n- reward_farming / maker: sizes up to meet the actual rewardsMinSize (no artificial $5 cap).\n- market_taker / quick_flip: hard $5 cap unless highConfidenceEdge=true.\n\nCall this when you want help deciding size before placing an order. You remain fully in control.',
     inputSchema: {
@@ -1958,130 +1936,6 @@ const secureTools = [
     },
   },
 
-  // === Strategy & SL/TP Storage (huge advantage for autonomous agents) ===
-  // Agents can store full trading plans (entry, TP, SL, size, notes) server-side in the MCP.
-  // This keeps the agent's context window clean and enables disciplined, rate-limit-respecting
-  // execution loops (use with wait_seconds + watches). The MCP becomes the agent's "trading brain"
-  // for persistent state while respecting platform rate limits.
-  {
-    name: 'set_strategy',
-    description: '[Strategy] Create or replace a full entry (trading plan OR any operating rules/filters). This is your universal lightweight persistent store. Use for: market farming rules (quoteNearMid, bothSides, stickyReprice, lowCompOnly, maxSpreadRatio, exitConditions, etc.), liquidity/volume/spread/cost filters, preferred event categories (WEATHER, CRYPTO, best-to-high yield, etc.), custom ranking/scoring logic, 24/7 uptime params, or any other rules the agent wants to evolve. For partial changes use update_strategy (preferred for filters). Key can be a tokenId or any rule identifier (e.g. "rules:current_farming", "filter:liquidity_high", "config:best_events"). Extra fields you send are preserved.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string', description: 'Key for this entry: tokenId, or any rule/config key like "rules:farming_v2" or "global:filters"' },
-        market: { type: 'string', description: 'Optional grouping (or sub-key)' },
-        entryPrice: { type: 'number' },
-        takeProfitPrice: { type: 'number' },
-        stopLossPrice: { type: 'number' },
-        size: { type: 'number' },
-        side: { type: 'string', enum: ['BUY', 'SELL'] },
-        notes: { type: 'string' },
-        maxWaitSecondsBetweenChecks: { type: 'number' },
-        // Any additional fields the agent sends (liquidityMin, preferredCategories, farmingRules, bestToHighThreshold, quoteNearMid, etc.) are stored as-is.
-      },
-      required: ['tokenId'],
-      additionalProperties: true
-    }
-  },
-  {
-    name: 'get_strategies',
-    description: '[Strategy] Retrieve ALL stored rules. Empty on first call auto-seeds rules:session_defaults + filter:liquidity_discovery (same as load_agent_profile). Call with no args every loop start; evolve via update_strategy.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string' },
-        market: { type: 'string' }
-      }
-    }
-  },
-  {
-    name: 'clear_strategy',
-    description: 'Delete a stored strategy or rule set (e.g. after abandoning a filter preset or farming rule version).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string' },
-        market: { type: 'string' }
-      },
-      required: ['tokenId']
-    }
-  },
-  {
-    name: 'update_strategy',
-    description: '[Strategy] THE KEY TOOL for lightweight power: partial update any fields on an existing entry (or create). Perfect for dynamically evolving filters, operating rules, market farming rules, liquidity thresholds, event category lists, "best to high" params, exit conditions, quoteNearMid toggles, etc. Only provided fields change; everything else (including prior custom rules) is preserved. Use keys like "rules:current", "filter:liquidity". This (plus categories + prompts) is why the MCP can stay tiny while the agent fully controls its strategy.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string', description: 'Key of the entry to update (tokenId or rule key like "rules:farming")' },
-        market: { type: 'string' },
-        entryPrice: { type: 'number' },
-        takeProfitPrice: { type: 'number' },
-        stopLossPrice: { type: 'number' },
-        size: { type: 'number' },
-        side: { type: 'string', enum: ['BUY', 'SELL'] },
-        notes: { type: 'string' },
-        maxWaitSecondsBetweenChecks: { type: 'number' }
-        // Send ANY other fields (liquidityMinUsd, maxSpreadRatio, preferredCategories, bothSides, sticky, lowCompetitionOnly, farmingExitRules, etc.) — they will be merged/persisted.
-      },
-      required: ['tokenId'],
-      additionalProperties: true
-    }
-  },
-
-  // ===================================================================
-  // SECURITY-SENSITIVE TOOLS (intentionally added per request)
-  // These expose raw signing and transaction capabilities.
-  // Use with extreme caution. The calling agent has full control over
-  // the connected wallet. Add your own access controls / allowlists.
-  // ===================================================================
-  {
-    name: 'sign_message',
-    description: '[Advanced] SECURITY-SENSITIVE: Signs an arbitrary message with the connected wallet. This can be used for authentication or arbitrary signatures. Only use if you fully trust the agent and have additional controls in place.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        message: { type: 'string', description: 'The message to sign (hex string or utf8 string)' }
-      },
-      required: ['message']
-    }
-  },
-  {
-    name: 'sign_typed_data',
-    description: '[Advanced] SECURITY-SENSITIVE: Signs EIP-712 typed data with the connected wallet. This is used for gasless orders and other structured signatures. Only use if you fully trust the agent.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        payload: {
-          type: 'object',
-          description: 'EIP-712 TypedDataPayload object (domain, types, primaryType, message)'
-        }
-      },
-      required: ['payload']
-    }
-  },
-  {
-    name: 'send_transaction',
-    description: '[Advanced] SECURITY-SENSITIVE: Directly sends a raw transaction from the connected wallet. This bypasses all high-level platform flows. Extremely dangerous. Only use with strong additional safeguards.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        request: {
-          type: 'object',
-          description: 'SignerTransactionRequest: { chainId, to, data?, value? }'
-        }
-      },
-      required: ['request']
-    }
-  },
-  {
-    name: 'end_authentication',
-    description: '[Advanced] SECURITY-SENSITIVE: Revokes the current API key session and returns a public client. This invalidates the current authenticated session.',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
 ];
 
 for (let i = 0; i < publicTools.length; i++) {
@@ -2235,23 +2089,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(plan, null, 2) }],
       };
-    }
-
-    case 'get_crypto_spot': {
-      try {
-        const symbols = Array.isArray(args.symbols) ? args.symbols : ['bitcoin', 'ethereum'];
-        const spots = await fetchCryptoSpotUsd(symbols.map(String));
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({ success: true, spots, note: 'Host compares vs fetch_midpoint / market cards for edge.' }, null, 2),
-          }],
-        };
-      } catch (e: any) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2) }],
-        };
-      }
     }
 
     case 'get_tools_by_category': {
@@ -2613,21 +2450,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return callWithFormat(() => pub.listTeams(), F.formatGeneric, name);
     case 'fetch_tag':
       return callWithFormat(() => pub.fetchTag(args), F.formatGeneric, name);
-    case 'get_uk_weather_forecast':
-      return callWithFormat(async () => {
-        const res = await weatherClient.getForecast(args.city, args.days, args.variables);
-        return F.formatWeather(res, args.city, 'forecast');
-      }, F.formatGeneric, name);
-    case 'get_uk_weather_historical':
-      return callWithFormat(async () => {
-        const res = await weatherClient.getHistorical(args.city, args.start_date, args.end_date, args.variables);
-        return F.formatWeather(res, args.city, 'historical');
-      }, F.formatGeneric, name);
-    case 'get_uk_weather_current':
-      return callWithFormat(async () => {
-        const res = await weatherClient.getCurrent(args.city, args.variables);
-        return F.formatWeather(res, args.city, 'current');
-      }, F.formatGeneric, name);
     case 'get_order_book': {
       try {
         const { tokenId, resolvedFrom, marketQuestion } = await resolveTokenIdFromToolArgs(args);

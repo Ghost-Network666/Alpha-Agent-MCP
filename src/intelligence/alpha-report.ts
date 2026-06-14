@@ -1,5 +1,4 @@
 import { discoverTopic } from '../data/discovery.js';
-import { weatherClient } from '../data/weather.js';
 import { fetchFarmabilitySnapshot } from './farmability.js';
 import { fetchRewardCandidates } from './rewards-candidates.js';
 import { rankOpportunities, type OpportunityInput } from './ranking.js';
@@ -161,24 +160,7 @@ export async function buildAlphaReport(
     context.tagId = discovered.tagId;
     context.eventCount = discovered.events.length;
     context.marketCount = discovered.markets.length;
-    if (goal === 'weather') {
-      try {
-        const city = req.topic?.toLowerCase().includes('london')
-          ? 'London'
-          : req.topic?.toLowerCase().includes('edinburgh')
-            ? 'Edinburgh'
-            : 'London';
-        const wx = await weatherClient.getForecast(city, 5);
-        context.weatherReference = { city, provider: wx.provider, snapshot: wx.data };
-        context.hostNote =
-          'Compare forecast vs market prices; pass your estimate as externalSignals.signal on compute_market_signals.';
-      } catch (e: unknown) {
-        context.weatherReference = {
-          error: e instanceof Error ? e.message : String(e),
-          fallbackTool: 'get_uk_weather_forecast',
-        };
-      }
-    }
+    // weather custom removed for strict SDK-only
     const midMin = req.midPriceMin ?? 0.45;
     const midMax = req.midPriceMax ?? 0.55;
     const liqMin = req.liquidityNumMin ?? 5000;

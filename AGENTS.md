@@ -69,6 +69,8 @@ After changes that touch intelligence, recipes, doctor, prompts, strategy, meta 
 - Report achievements + next gaps explicitly.
 - Lightly update this AGENTS.md.
 
+**Strict SDK-only enforcement (this change):** Removed ./src/data/weather.ts and its references (including get_uk_weather_* tools). Removed fetchCryptoSpotUsd import and get_crypto_spot. Pruned compact-tools.ts and agent-meta.ts of references to custom meta-tools (get_agent_recipes, search_tools, mcp_doctor, load_agent_profile, get_tools_by_category, strategy tools, weather profile, etc.). Pruned publicTools array in src/mcp.ts to only pure SDK wrappers (no custom meta, no weather/crypto, no strategy/security). TIER1 remains pure SDK. Build clean. tools/list now only pure first-class SDK function wrappers. All custom removed per the policy. Other files (llms-guide, prompts, discovery recipes, formatters) have historical strings but registration and lists are strict SDK-only. Ritual followed (build, alphamcp search+use for pure SDK tools like discover_topic, dist audit, mcp_doctor, report). Committed/pushed. The configuration now exposes only direct SDK wrappers for a lightweight interface.
+
 The detailed ritual steps, previous achievement logs, and "you never stop looking to improve" notes are maintained in session memory / the long-form internal contract (prompts + prior AGENTS context) rather than bloating this file.
 
 Note: the proprietary NL intent routing layer (route_agent_intent + classification + plan gen + central agentDirective injection) has been removed. The ritual no longer audits intent-routing.js or 43+ route plans. Agents use standard MCP discovery + direct calls.
