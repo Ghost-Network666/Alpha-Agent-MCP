@@ -234,7 +234,7 @@ export async function discoverTopic(req: DiscoverTopicRequest): Promise<Discover
 /** Static recipes so agents never guess tool names/args for common flows. */
 export function getAgentRecipes(): Record<string, unknown> {
   return {
-    note: 'Tier-1 compact in tools/list. Full ~145 handlers via categories. Routing always on. Health: mcp_doctor or npm run doctor.',
+    note: 'Flat complete surface: tools/list returns every tool (all SDK 1:1 + meta) immediately with no tiers, profiles, or load steps required. Health: mcp_doctor or npm run doctor. Agent uses tools/list + tools/call by exact name.',
     gammaTags: {
       count: listGammaTagSlugs().length,
       hint: 'discover_topic — UK + US curated topics only; alias → registry tagId',
@@ -268,11 +268,10 @@ export function getAgentRecipes(): Record<string, unknown> {
 
     },
     startup: [
-      'Routing always on — every native tool returns routing.nextTools; optional configure_agent_routing({ intent: "rewards_farm" })',
-      'OR route_agent_intent({ intent: "session_startup" }) — fetch_sdk_readme + recipes',
-      'Every native tool response includes routing.nextTools + toolPurpose + sdkMethod when routing enabled',
+      'Flat MCP: tools/list once returns the complete surface (all tools).',
+      'Call get_agent_recipes + prompts/get mcp_llms_full_guide + get_strategies first.',
+      'Then tools/call any by exact name (agent decides sequence).',
       'prompts/get never_guess_contract + agent_routing',
-      'tools/list again after load_agent_profile (strict hosts)',
     ],
     setRoutingIntent: {
       tool: 'configure_agent_routing',
@@ -331,10 +330,11 @@ export function getAgentRecipes(): Record<string, unknown> {
       },
     },
     profiles: {
-      weather: { tool: 'load_agent_profile', arguments: { profile: 'weather' } },
-      rewards: { tool: 'load_agent_profile', arguments: { profile: 'rewards' } },
-      trading: { tool: 'load_agent_profile', arguments: { profile: 'trading' } },
-      full: { tool: 'load_agent_profile', arguments: { profile: 'full' } },
+      note: 'Profiles are now advisory/seed-only (strategy defaults). All tools are in tools/list from startup in the flat model — no load_agent_profile call is needed to access or use any tool.',
+      weather: { tool: 'get_strategies', note: 'seed via optional profile if using load for compat' },
+      rewards: { tool: 'get_strategies' },
+      trading: { tool: 'get_strategies' },
+      full: { tool: 'get_strategies' },
     },
     findTool: { tool: 'search_tools', arguments: { query: '<keyword>', detail: 'summary' } },
     supportedTopics: listDiscoverTopicHints(),
@@ -371,8 +371,8 @@ export function getAgentRecipes(): Record<string, unknown> {
       protocol: 'resources/list + resources/subscribe + resources/read on notification',
     },
     lazyMetaTools: {
-      note: 'Extreme token efficiency: default tools/list is small tier-1 meta only. Use search_tools for discovery, tool_describe(name) for on-demand full schema (no 110 upfront). Then direct call or (better) route_agent_intent(NL) for plans with exact steps. configure_lazy_tool_discovery intent for guidance. Reduces initial context >90%. All internal, agent never loads bloat.',
-      metaTools: ['search_tools', 'tool_describe', 'route_agent_intent', 'get_agent_recipes', 'mcp_health', 'get_mcp_usage'],
+      note: 'Flat model: tools/list returns the full ~90+ immediately (acceptable for modern contexts; agents may cache). search_tools / get_tools_by_category remain as optional filters. No bloat gating.',
+      metaTools: ['search_tools', 'tool_describe', 'get_agent_recipes', 'mcp_health', 'get_mcp_usage', 'get_strategies'],
     },
     fullApiCoverage: {
       note: '100% coverage means using the unified @polymarket/client SDK to its fullest – CLOB, Gamma (via GammaClient actions for market discovery/tags/events/series), Data (via DataClient for analytics/positions/PnL/activity/portfolio), and WebSocket user streams – all through the SDK, no external REST calls or raw HTTP. MCP exposes native tools/resources that call these SDK methods/clients only (e.g. discover_topic/list_tags/fetch_tag for Gamma, list_positions/generate_alpha_report for Data, place_optimized_reward_order for Relayer gasless, resources for WS). Confirmed: gamma-tag-registry.ts for Gamma metadata, list_positions etc. for Data, relayer config for gasless. full_api_coverage intent or route_agent_intent(NL) for plans. See mcp_llms_full_guide (starts with canonical SDK README) for exact mappings.',

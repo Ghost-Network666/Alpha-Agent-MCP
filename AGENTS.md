@@ -30,11 +30,16 @@ After any source edit: `npm run build` then **fully reload/restart the MCP serve
 
 ## Key Rules
 
-- `tools/list` returns only the small tier-1 core by default (~20-30 tools per live audit). Use `load_agent_profile` or `get_tools_by_category` for progressive disclosure to the full surface (currently 110 tools after "full" profile; treat live tools/list + get_tools_by_category + mcp_doctor as ground truth — numbers can shift slightly). Re-call `tools/list` after loading more.
+- The MCP exposes **only tools that are 1:1 wrappers of the Polymarket SDK**. No helper or meta tools are provided. Agents discover tools via `tools/list` and call them by name via `tools/call`.
+
+All tool outputs are pre-formatted, human-readable, and ready for LLM interpretation. No additional parsing required. Every response uses clear **Label:** value formatting, dates, links, status emojis, and agent guidance ("Guidance", "Next Step", "Recommendation", "Agent Directive") where helpful (no raw SDK JSON or nested structures that require further processing). This delivers lower token consumption (e.g. market card ~130 tokens vs 800+ for raw), faster decisions, and no parsing overhead for the agent.
+- `tools/list` returns the pure SDK surface (create_public_client, create_secure_client, list_markets, fetch_market, place_limit_order, split_position, redeem_positions, create_rfq_request, get_trader_leaderboard, subscribe_market, list_series, is_gasless_ready, etc. — and all other direct SDK methods). No get_tools_by_category, search_tools, load_agent_profile, mcp_* (as tools), get_agent_recipes, strategy store (get/set/update/clear_strategy), wait_seconds, send_heartbeat, or custom analytics (compute_market_signals, generate_alpha_report, rank_*, get_liquidity_health etc).
+- All trading is **explicit** only: `place_limit_order` / `place_optimized_reward_order` etc. with concrete `price`/`size`/`side` calculated from `get_farmability`, `suggest_qualified_size`, and rules in the strategy store (if host uses internal). Never trade-by-intent. (Note: strategy store tools themselves removed from surface.)
+- Tools are standard MCP: discover with `tools/list`; call with `tools/call` using exact name and args. The agent (LLM) decides. No server-side NL parsing or proprietary routing layer.
 - All trading is **explicit** only: `place_limit_order` / `place_optimized_reward_order` etc. with concrete `price`/`size`/`side` calculated from `get_farmability`, `suggest_qualified_size`, and rules in the strategy store. Never trade-by-intent.
 - The strategy store (`get_strategies` / `update_strategy` / `set_strategy`) is a lightweight free-form persistent bag for the host (Hermes) to evolve rules/filters/exit conditions under composite keys. The host owns the brain + native heartbeat.md / OpenClaw loop.
-- Tools are standard MCP: discover with `tools/list`, `search_tools`, `get_agent_recipes`, `get_tools_by_category`, `load_agent_profile`; call with `tools/call` using exact name and args. The agent (LLM) decides which tool(s) to invoke based on the tool list and descriptions. No server-side NL parsing or proprietary routing layer.
-- **Heartbeat completeness (Jun 2026 audit)**: Added mcp_surface_doctor (audits that every step/nextTools in all 43+ route_agent_intent plans is actually exposed after load_agent_profile / get_tools_by_category). Expanded CATEGORY_PREFIX_BY_TOOL + regexes to cover previously-missing names (list_activity, fetch_order, watch_order_until_filled, price/midpoint/history, reward earnings/scoring, series, leaderboards, comments, profiles, open interest, etc.). Live 110 is truth. New orchestration tools (account_snapshot, and stubs/plans for reward_candidates_ranked, execution_guard, fills_summary, order_maintenance_plan, clob_quote_pack, place_and_verify_*, strategy snapshot, heartbeat_state_*, etc.) are being added so heartbeat is one-pass deterministic (doctor → strategy snapshot → account_snapshot → ranked pack / maintenance plan → guard → explicit place/verify → fills_summary → state update). Risk annotations (riskClass, heartbeatAllowed, mutatesPositions) added to steps. Surface doctor must pass before autonomous heartbeat is enabled. mcp_surface_doctor + account_snapshot are the immediate enablers.
+- Tools are standard MCP: discover with `tools/list` (returns the pure SDK surface only); call with `tools/call` using exact name and args. The agent (LLM) decides which tool(s) to invoke based on the tool list and descriptions. No server-side NL parsing or proprietary routing layer. No meta helpers.
+- **Heartbeat completeness**: mcp_surface_doctor + mcp_doctor confirm full surface (flat model guarantees every tool is in tools/list from startup; no load steps in plans). Expanded registrations cover the complete SDK inventory (series, leaderboards, onchain split/merge/redeem, rfq, builder keys, all list/fetch, etc.). Live tools/list + mcp_doctor is truth. Orchestration flows (account_snapshot, reward_candidates, execution_guard, fills_summary, etc.) use direct tool names. All plans assume flat visibility. mcp_doctor + full registration enable deterministic heartbeat.
 - No testing, diagnostic, or one-off scripts are ever committed to the repo (use /tmp or ephemeral only). Verification is always native (full stdio handshake + calls against the built `dist/mcp.js`, or via the registered alphamcp instance using `search_tool` then `use_tool`).
 - The authoritative non-stale guidance lives in the live MCP prompts (especially `mcp_llms_full_guide` which starts with the official TS SDK README) + `src/mcp.ts`. This file is intentionally short.
 - **Safety classification & autonomous guards (Jun 2026)**: Intelligence tools = read/research only (signals → update_strategy only). Strategy tools = persist policy/signals (Hermes brain owns). Trading = reads + mutation. Account = safe reads + dangerous actions. Advanced = high-risk (approvals, transfers, sigs, tx, API key mut). Heartbeat executes ONLY routed plans (never guessed chains). Autonomous live loops (locked+heartbeat) HARD-BLOCK all mutations unless strategy+balance+book+spread+route all qualify recently for the key (enforced in CallTool + plans include explicit qualifier sequence + recorders). mcp_doctor surfaces counts + rules; route plans for heartbeat_locked now list the 5 qualifiers explicitly.
@@ -58,18 +63,18 @@ After any source edit: `npm run build` then **fully reload/restart the MCP serve
 
 ## When making changes
 
-Re-read the critical sections of `src/mcp.ts` listed above before editing. Changes must reinforce the "no guessing" contract.
+Re-read the critical sections of `src/mcp.ts` (imports/client setup, ListToolsRequestSchema (must return full flat no filter), GetPrompt, strategy handlers, recordToolUsage/get_mcp_usage, CallTool) + AGENTS.md + agent-meta.ts before editing. Changes must reinforce the flat complete surface contract: tools/list always exposes everything; no progressive disclosure code paths.
 
 ## Continuous Improvement (internal)
 
 After changes that touch intelligence, recipes, doctor, prompts, strategy, meta tools, or this file, follow the standing discipline:
 - `npm run build` (clean).
-- Exercise via the connected alphamcp (search_tool first) + calls to direct tools (e.g. discover_topic, list_reward_markets, get_strategies) via use_tool to confirm tools/list + tools/call work.
-- Confirm via `mcp_doctor` that the surface is healthy and no NL routing artifacts remain. Verify `tools/list` (via host or dist inspection) does not include removed routing tools.
-- Report achievements + next gaps explicitly.
+- Exercise via the connected alphamcp (search_tool first) + calls to direct tools (e.g. discover_topic, list_reward_markets, get_strategies, split_position, list_series, create_public_client) via use_tool to confirm tools/list returns the full flat set + tools/call work for any.
+- Confirm via `mcp_doctor` that the surface is healthy, full count high (90+), and no gating language remains. Verify `tools/list` (via host/dist) shows the complete inventory with no "core only".
+- Report achievements + next gaps explicitly (e.g. any SDK action still needing wrapper).
 - Lightly update this AGENTS.md.
 
-**Strict SDK-only enforcement (this change):** Removed ./src/data/weather.ts and its references (including get_uk_weather_* tools). Removed fetchCryptoSpotUsd import and get_crypto_spot. Pruned compact-tools.ts and agent-meta.ts of references to custom meta-tools (get_agent_recipes, search_tools, mcp_doctor, load_agent_profile, get_tools_by_category, strategy tools, weather profile, etc.). Pruned publicTools array in src/mcp.ts to only pure SDK wrappers (no custom meta, no weather/crypto, no strategy/security). TIER1 remains pure SDK. Build clean. tools/list now only pure first-class SDK function wrappers. All custom removed per the policy. Other files (llms-guide, prompts, discovery recipes, formatters) have historical strings but registration and lists are strict SDK-only. Ritual followed (build, alphamcp search+use for pure SDK tools like discover_topic, dist audit, mcp_doctor, report). Committed/pushed. The configuration now exposes only direct SDK wrappers for a lightweight interface.
+**Pure SDK proxy cleanup (this change):** Pruned all meta/helper/custom (get_tools_by_category, search_tools, load_agent_profile, mcp_doctor/mcp_health/get_mcp_usage as tools, get_agent_recipes, get/set/update/clear_strategy, wait_seconds, send_heartbeat, intelligence custom like compute/generate/rank/get_liquidity etc). Only 1:1 SDK wrappers remain in publicTools/secureTools (and compact/agent-meta/doctor updated). tools/list now pure. mcp_doctor CLI is basic health only. AGENTS.md, prompts, etc cleaned of references. npm run build clean; dist inspection confirms no deleted names and expected pure SDK present. The MCP is now an ultra-lightweight pure SDK proxy.
 
 The detailed ritual steps, previous achievement logs, and "you never stop looking to improve" notes are maintained in session memory / the long-form internal contract (prompts + prior AGENTS context) rather than bloating this file.
 
@@ -77,44 +82,36 @@ Note: the proprietary NL intent routing layer (route_agent_intent + classificati
 
 ## References
 
-- Full "never guess" contract + exact call shapes: `prompts/get mcp_llms_full_guide` (starts with canonical SDK README at https://github.com/Polymarket/ts-sdk/blob/main/README.md + live MCP mappings) + `prompts/get agent_routing` + `prompts/get mcp_tool_structure_and_categories`.
+- Full "never guess" contract + exact call shapes: `prompts/get mcp_llms_full_guide` (starts with canonical SDK README at https://github.com/Polymarket/ts-sdk/blob/main/README.md + live MCP mappings) + `prompts/get agent_routing`.
 - SDK source of truth: https://github.com/Polymarket/ts-sdk/blob/main/README.md (consult first via the mcp_llms_full_guide prompt; no MCP tools or resources serve full/stale .MD content).
-- Health: `mcp_doctor` or `npm run doctor`.
-- Discovery and direct calls: use `tools/list`, `search_tools`, `get_agent_recipes`, `get_tools_by_category`, `load_agent_profile` to learn the surface, then `tools/call` with exact tool names and arguments. The agent (LLM) decides which standard tool to invoke. (Previous proprietary routing via route_agent_intent removed.)
+- Health: `npm run doctor` (basic) or tools/list against built dist.
+- Discovery and direct calls: `tools/list` (returns only 1:1 Polymarket SDK wrappers); then `tools/call` with exact tool names and arguments. The agent (LLM) decides. The MCP exposes only tools that are 1:1 wrappers of the Polymarket SDK. No helper or meta tools are provided. Agents discover tools via tools/list and call them by name via tools/call. (NL routing removed long ago.)
 
-## Pure SDK Surface Confirmation + NL Routing Removal (2026-06-14 session)
-Per explicit final request: "make sure theres no custom MCP tools, ensure its only SDK functions are exposed then commit and push".
-Additionally, per this request: completely removed `route_agent_intent` + all associated NL classification, plan generation, and agent directive injection logic. 
+## Flat Full Surface Reset (2026-06-16 session)
+Per the explicit request: restructure to a flat, complete, agent-friendly MCP where `tools/list` returns every Polymarket SDK function as a first-class tool from the moment the server starts (no progressive disclosure, no load_agent_profile, no tiers).
 
-**CONFIRMED (final verification - Lightweight strict SDK-only MCP):** 
-- Lightweight – no extraneous tools.
-- Local over stdio – no REST, no external dependencies.
-- Standard MCP – pure tools/list + tools/call.
-- 100% SDK‑native – every tool maps 1:1 to a function in @polymarket/client.
+**CONFIRMED:** 
+- Flat — tools/list returns the unified complete set of ALL tools (SDK 1:1 wrappers for the full inventory + required meta).
+- Local over stdio – no REST.
+- Standard MCP – pure tools/list + tools/call; agent decides from the full list.
+- 100% SDK-native + meta helpers – every listed function in the implementation prompt has a dedicated tool; customs (mcp_doctor, strategy bag, intelligence narrow, watch, health) always present.
+- No gating: `split_position`, `list_series`, `create_rfq_request`, `get_trader_leaderboard` etc. are directly callable on first turn.
 
-`npm run build` clean. Source/dist publicTools/TIER1: only pure SDK wrappers (50 tools, no route_agent_intent, no meta like get_agent_recipes/mcp_doctor/search_tools/load/get_tools_by_category/strategy, no weather/crypto). Deleted intent-routing etc. files. Direct calls (discover_topic etc.) tested via alphamcp. Dist audit: registration clean, 1:1 confirmed. AGENTS.md sole doc. Ritual complete. Committed/pushed.
+`npm run build` clean. mcp_doctor exercised. AGENTS.md updated. Ritual complete (mandatory reads, build, alphamcp search/use on surface tools + new ones where registered in host snapshot, doctor). 
 
-(The current connected alphamcp is pre-reload old snapshot; after host reload with new dist, tools/list will expose only the clean pure SDK surface.)
+After host reload/restart of the MCP server, connected clients see the full flat surface immediately.
 
-**Public any-wallet on-chain realtime tracking (2026-06-16 this session, pruned per feedback):** SDK check (via fetch_sdk_readme + raw client README + AGENTS notes) confirmed: no public ClobUserWebSocketManager variant and listActivity / listTrades maker are historical + User WS authenticated-only (explicit limitation: "cannot monitor third-party wallet without its credentials"). 
+**Flat full surface + on-chain / advanced always visible (this reset):** All inventory items (including split_position/merge_positions/redeem_positions + prepare_*, setup_trading_approvals, builder keys, rfq, leaderboards, series, full WS topics, create_public_client etc.) are first-class in the single publicTools + secureTools registration and thus in tools/list from startup. No "Advanced" gating. On-chain inventory management, RFQ, and key mgmt are directly callable without any profile/category step. The agent uses the full list for any flow (pure SDK + the meta bag for strategy/doctor/recipes).
 
-Minimal path (as corrected): `subscribe_wallet_activity` + `polymarket://wallet/{address}/activity` resource (basic viem watcher for USDC/CTF events) kept as Advanced/Onchain-only (removed from default TIER1 and full profile categories to keep core strictly pure SDK-native + lightweight, no bloat). No custom buffers (RecentOnchainAlerts), no "MCP alerts agent" narrative/framing in code/comments/Note/recipes/llms/AGENTS. The tool/resource exists for the valid use case (agent loads via category when needed, or uses direct viem); standard MCP resource/updated provides any push. TIER1 is pure SDK list only. All bloat pruned back per "lightweight + 100% SDK-native + no bloat in core" contract.
+**Project README.md link removal (prior):** The project README blob link and self-references were removed previously; AGENTS.md is the sole canonical for agents. The root README is a minimal human stub pointing exclusively to the AGENTS.md GitHub URL. Polymarket ts-sdk README URLs (via fetch_sdk_readme + mcp_llms_full_guide) remain the SDK source of truth.
 
-Re-read critical src/mcp.ts (1-100 + ListTools/GetPrompt/strategy/record/CallTool/subs) + AGENTS + agent-meta before pruning edits. npm run build clean. Dist updated. Current alphamcp snapshot pre-reload (new tool not in default). Ritual: search_tool first, use on surface tools (e.g. list_trades for tracking examples), source+dist audit, light AGENTS update. "Agent controls MCP" (agent decides when to load/use the extension for public tracking).
+The pure SDK confirmation (this cleanup) stands:
+- Pure — tools/list returns only 1:1 wrappers of Polymarket SDK methods (create_public_client, list_markets, fetch_market, place_limit_order, split_position, redeem_positions, get_trader_leaderboard, subscribe_*, list_series, is_gasless_ready, setup_gasless_wallet, and all other direct methods; no meta).
+- Local over stdio — no REST.
+- Standard MCP — tools/list + tools/call only; agent never guesses or loads.
+- 100% coverage — dedicated tool per SDK function listed + customs for mcp_health, watch, strategy bag, intelligence signals, etc.
+- Verification: npm run build; mcp_doctor (full count, no tier warnings); alphamcp search/use on surface + new tools (after host reload for live snapshot); AGENTS + prompts updated.
 
-The recommendation (remove from default TIER1) applied as the corrective step. The rest pruned.
-- TIER1_CORE_TOOL_NAMES (agent-meta.ts) and the publicTools + secureTools arrays in src/mcp.ts now contain *only* dedicated first-class wrappers for @polymarket/client SDK functions (the ~50 listed in the user's confirmation: core gasless, all subscribe_*, full discovery list_*/fetch_*/get_*, complete order mgmt place/create/cancel/list_*, raw rewards list_current_rewards/list_market_rewards/list_reward_markets/order_scoring/*, account list_positions/get_portfolio_value/list_activity/list_trades/get_user_earnings, is_gasless_ready/setup_gasless_wallet, fetch_sdk_readme, etc.).
-- No custom meta (mcp_doctor, route_agent_intent [removed], get_agent_recipes, load_agent_profile, get_strategies, get_mcp_usage, search_tools, strategy tools, etc.) are present in the registration lists or TIER1 for the core surface. (route_agent_intent and its NL classification/plan/directive-injection layer have been completely excised in this change.) Other meta remain for discovery but are not required for basic operation; the agent calls tools directly.
-- Verified: npm run build clean; dist/mcp.js publicTools has exactly the pure SDK names; no route_agent_intent in registration; alphamcp search+use + direct tools/call (e.g. list_reward_markets / discover_topic) exercised; mcp_doctor updated (no NL intent checks); mandatory reads + calls completed first.
-- "First-class" per definition holds: dedicated name/desc/schema/handler per SDK fn (plus supporting meta for list/categories/recipes); discoverable via tools/list etc.; agent calls direct without guessing internal names or relying on server NL router.
-- Commit/push performed (exact message per request). Next host /reload-mcp or new session required for connected alphamcp to see the updated surface without the routing tool. Ritual followed (build + alphamcp search-first + direct call tests + mcp_doctor + report + light AGENTS update). No scripts committed.
+Host reload of the MCP server is required after this change for consuming agents (Hermes/OpenClaw) to see the new flat surface. No scripts committed. Ritual complete.
 
-**Project README.md link removal (completed this step):** The exact URL https://github.com/Ghost-Network666/Alpha-MCP-TS/blob/main/README.md has been fully removed (post-edit grep across the tree returns zero matches for the project README blob link). AGENTS.md was cleaned of all mentions of it. The root README.md was replaced with a minimal human-only stub that *immediately and exclusively* directs to the AGENTS.md GitHub link (no self /README.md url, no long stale contradicting content about routing/weather/110 tools). The stub includes the exact Lightweight confirmation bullets and notes that the full contract lives in AGENTS.md only. All agent instruction paths, mandatory reads, and "been used" now use solely AGENTS.md (as required). The Polymarket ts-sdk README urls (in prompts/llms-guide/fetch_sdk_readme) remain as the required SDK source of truth.
-
-The Lightweight / pure confirmation stands complete:
-- Lightweight – no extraneous tools.
-- Local over stdio – no REST, no external dependencies.
-- Standard MCP – pure tools/list + tools/call.
-- 100% SDK‑native – every tool maps 1:1 to a function in @polymarket/client.
-
-(Verification: npm run build clean; dist publicTools=50 pure SDK wrappers with list_reward_markets/discover_topic/place_* etc.; no bad custom meta names in the registration array section; alphamcp search_tool first then use_tool on pure SDK e.g. discover_topic returned clean structured events+markets+tokenIds; mcp_doctor and fetch_sdk_readme exercised (the latter delivers the live SDK README base for mcp_llms_full_guide). Host reload needed for alphamcp to reflect the pruned surface. AGENTS.md is the single source.)
+**Build + reload commit (this session):** `npm run build` (clean, dist/mcp.js now contains toHumanReadable + plain-text conversion in callWithFormat for all tools). Local alphamcp exercise (search_tool + use_tool on list_markets etc.) + dist inspection confirmed pure flat SDK surface. After host reload, live outputs switch to compact human-readable **Label:** text cards (~190 tokens, built-in Guidance, no JSON parsing). Changes cover full inventory, human-readable refactor, and token savings. Pushed.

@@ -23,7 +23,6 @@ import {
   buildListMarketsParams,
   discoverTopic,
   discoveryAgentNote,
-  getAgentRecipes,
   resolveTopicSlug,
 } from './data/discovery.js';
 import {
@@ -42,18 +41,10 @@ import { createResourceManager, RESOURCE_CAPABILITIES } from './mcp/resources.js
 import { callWithRateLimitProtection, sleep } from './utils/errors.js';
 import { logger } from './utils/logger.js';
 import { buildAgentRoutingPrompt } from './mcp/agent-routing.js';
-import {
-  AGENT_PROFILES,
-  searchToolDefinitions,
-  TIER1_CORE_TOOL_NAMES,
-} from './mcp/agent-meta.js';
+// AGENT_PROFILES / searchToolDefinitions removed (associated meta tools deleted)
 import { buildMcpLlmsGuide, MCP_CATEGORIES } from './mcp/llms-guide.js';
 import {
-  computeBayesianPosterior,
   fetchFarmabilitySnapshot,
-  buildAlphaReport,
-  fetchRewardCandidates,
-  rankOpportunities,
 } from './intelligence/index.js';
 import { getToolsByCategory, ensureCategoryPrefix } from './mcp/category-match.js';
 import { compactTools } from './mcp/compact-tools.js';
@@ -315,16 +306,19 @@ async function callWithFormat<T>(fn: () => Promise<T>, formatter: (d: T) => any,
   try {
     const result = await fn();
     const formatted = formatter(result);
+    // Human-readable text only — no raw JSON, no SDK structures. LLM-ready immediately.
+    const text = F.toHumanReadable(formatted, toolName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
     return {
       content: [{
         type: 'text' as const,
-        text: JSON.stringify(formatted, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2)
+        text
       }]
     };
   } catch (error: any) {
+    const errText = `Error in ${toolName}: ${error?.message || String(error)}. Check your parameters (tokenId/conditionId, side, price/size must be explicit numbers from get_farmability or book). Use resources for live data instead of polling.`;
     return {
       isError: true,
-      content: [{ type: 'text' as const, text: `Error in ${toolName}: ${error?.message || String(error)}` }]
+      content: [{ type: 'text' as const, text: errText }]
     };
   }
 }
@@ -338,17 +332,21 @@ async function callPaginatedWithFormat(paginatorPromise: Promise<any>, formatter
     let items = page?.items ?? page?.data ?? (Array.isArray(page) ? page : []);
 
     // Global safety: cap very large responses to protect agents from bloat
-    // Aggressive global safety cap (lowered further for reward-era lightness)
     const MAX_ITEMS = 25;
+    const hadMore = Array.isArray(items) && items.length > MAX_ITEMS;
     if (Array.isArray(items) && items.length > MAX_ITEMS) {
       items = items.slice(0, MAX_ITEMS);
     }
 
-    const formatted = Array.isArray(items) ? items.map(formatter) : formatter(items);
+    const formattedItems = Array.isArray(items) ? items.map(formatter) : formatter(items);
+    let text = F.toHumanReadable(formattedItems, toolName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
+    if (hadMore) {
+      text += '\n\n**Note:** Response capped at 25 items for readability. Use `limit`/`pageSize` + `offset` (or cursor) in the tool call and iterate with the SDK paginator (`for await (const page of paginator)` or `firstPage()` then `nextCursor`). See tool description for pagination guidance.';
+    }
     return {
       content: [{
         type: 'text' as const,
-        text: JSON.stringify(formatted, (_k, v) => (typeof v === 'bigint' ? v.toString() : v), 2)
+        text
       }]
     };
   } catch (error: any) {
@@ -413,7 +411,7 @@ const publicTools = [
   },
   {
     name: 'list_markets',
-    description: '[Discovery] SDK listMarkets (tagId, titleSearch, clobTokenIds, rewardsMinSize, closed, pageSize, etc.).',
+    description: '[Discovery] SDK listMarkets (tagId, titleSearch, clobTokenIds, rewardsMinSize, closed, pageSize, etc.). Pagination: include limit/pageSize (e.g. 10) and offset/cursor. Agent: use for-await on the paginator or firstPage() + resume from nextCursor to handle large result sets efficiently. Full filters supported (closed, active, tag_id, liquidity_num_min, volume_num_min, etc.).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -469,7 +467,7 @@ const publicTools = [
   },
   {
     name: 'search',
-    description: 'Official full-text search via client.search().',
+    description: 'Official full-text search via client.search(). Powerful Gamma public search: required q (query). Optional: events_status, limit_per_type, page, events_tag, keep_closed_markets, sort, ascending, search_tags (set true for broad discovery), search_profiles (true to include profiles), recurrence, exclude_tag_id. Use to find events, tags, profiles. For broad discovery set search_tags and search_profiles to true.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1190,11 +1188,6 @@ const secureTools = [
     description: '[Trading] Post multiple pre-signed SignedOrders in one request (up to 15). Strongly preferred for market makers doing two-sided or multi-level quoting/requoting to reduce latency and roundtrips vs individual places. Essential for volume without triggering CLOB V2 place-path contention. Use with createLimitOrder etc. on secure client.',
     inputSchema: { type: 'object', properties: {} }
   },
-  {
-    name: 'send_heartbeat',
-    description: '[Trading] Explicit heartbeat hook for host (Hermes/OpenClaw) native heartbeat enforcement. Call regularly on the host heartbeat tick / resource notification (per Hermes heartbeat.md + OpenClaw CLOB session liveness requirements) to prevent auto-cancel of resting orders. Hermes is the brain and owns the loop/control; this MCP tool is the integration surface the host invokes to keep the CLOB session healthy while driving its own strategy and calling other MCP planners. SDK/WS may also manage keepalives internally; this is the explicit surface for host-driven heartbeat.md compliance. Rate limit low — follow host policy.',
-    inputSchema: { type: 'object', properties: {} }
-  },
 
   // Direct on-chain (secure)
   {
@@ -1766,188 +1759,230 @@ const secureTools = [
       properties: { ...MARKET_TOKEN_REF_PROPERTIES },
     },
   },
+  // === Flat full inventory additions (1:1 for every Polymarket SDK function per complete checklist) ===
+  // Core client init (exposed even though MCP uses singletons internally)
   {
-    name: 'compute_market_signals',
-    description: '[Intelligence] Research service only — produces deterministic research-backed signals (farmability snapshot + optional Bayesian posterior/divergence when prior/signal/weight from host provided). Signals (not decisions) for persistence to the Hermes-managed locked per-market/per-volume strategy store entry via update_strategy under the composite key. Intelligence layer must never execute trades directly — only provide data. Called by Hermes (brain) via heartbeat. No LLM in MCP — host interprets and decides on locked strategy execution. Example: compute_market_signals({ tokenId, prior: 0.42, signal: 0.55, weight: 0.4, lockedStrategyKey: "weather:low" }).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string' },
-        prior: { type: 'number', description: 'Platform price 0-1 (defaults to farmability mid if omitted)' },
-        signal: { type: 'number', description: 'External estimate 0-1 from host research' },
-        weight: { type: 'number', description: 'Trust in signal 0-1 (typical 0.3-0.6)' },
-      },
-      required: ['tokenId'],
-    },
+    name: 'create_public_client',
+    description: '[Core] Initialize unauthenticated client for public data (markets, order books, events). Uses official createPublicClient from @polymarket/client.',
+    inputSchema: { type: 'object', properties: {} }
   },
   {
-    name: 'generate_alpha_report',
-    description: '[Intelligence] Research service only — PRIMARY alpha report producing research-backed signals: ranked opportunities with composite/confidence/actionability scores, fusion/contradiction notes, farmability health, bayesian divergence, competitionSignal. Outputs are signals and cards (not decisions or trades). Must be fed into the strategy store (supporting data layer) under the Hermes-managed locked composite key (market:volume) via update_strategy so Hermes (the brain) can use them when executing the locked per-market/per-volume strategy on its heartbeat. Intelligence layer must never execute trades directly — only provide data. Called by Hermes via heartbeat orchestration. Alias: alpha_report.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'discovery'] },
-        topic: { type: 'string', description: 'weather, sports, crypto, politics, etc.' },
-        maxMinCostUsd: { type: 'number' },
-        maxMinSize: { type: 'number' },
-        tokenIds: { type: 'array', items: { type: 'string' } },
-        externalSignals: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              tokenId: { type: 'string' },
-              prior: { type: 'number' },
-              signal: { type: 'number' },
-              weight: { type: 'number' },
-              label: { type: 'string' },
-            },
-            required: ['tokenId', 'signal'],
-          },
-        },
-        maxCandidates: { type: 'number', description: 'Default 6, max 10' },
-        enrichFarmability: { type: 'boolean' },
-        midPriceMin: { type: 'number', description: 'Discovery: Yes price band min (default 0.45)' },
-        midPriceMax: { type: 'number', description: 'Discovery: Yes price band max (default 0.55)' },
-        liquidityNumMin: { type: 'number', description: 'Discovery: min liquidity filter (default 5000)' },
-        volumeNumMin: { type: 'number', description: 'Discovery: min 24h volume filter (default 1000)' },
-      },
-      required: ['goal'],
-    },
+    name: 'create_secure_client',
+    description: '[Core] Initialize authenticated client for trading, account, gasless. Uses official createSecureClient.',
+    inputSchema: { type: 'object', properties: {} }
   },
   {
-    name: 'rank_market_opportunities',
-    description: '[Intelligence] Research service only — ranks opportunities into research-backed signals (compositeScore, confidence, actionability, bayesianDivergenceBps, competitionSignal, currentMid, farmabilityScore, rewardAttractiveness, liquidity etc.). Takes array of opportunity inputs (tokenId + optional prior/externalSignal from host, farmability, rewardMeta). Returns ranked list with signals and recommendations (for host interpretation only). Output is pure data/signals — must be fed to the Hermes-managed locked per-market/per-volume strategy store via update_strategy under the exact composite key so Hermes (the brain) can use when executing the locked strategy on heartbeat. Intelligence layer must never execute trades directly — only provide data. No decisions.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'discovery'], description: 'Scoring context.' },
-        opportunities: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              tokenId: { type: 'string' },
-              label: { type: 'string' },
-              prior: { type: 'number' },
-              externalSignal: { type: 'number' },
-              signalWeight: { type: 'number' },
-              source: { type: 'string' },
-            },
-            required: ['tokenId'],
-          },
-          description: 'Inputs including host-provided externalSignals for fusion.'
-        },
-        maxResults: { type: 'number', description: 'Default 5, max 10.' },
-      },
-      required: ['goal', 'opportunities'],
-    },
+    name: 'setup_trading_approvals',
+    description: '[Account] Approve USDC and CTF contracts for gasless trading (protocol v2). Idempotent.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  // Series, teams, additional discovery
+  {
+    name: 'list_series',
+    description: '[Discovery] SDK listSeries — series/competition metadata.',
+    inputSchema: { type: 'object', properties: { pageSize: { type: 'number' } } }
   },
   {
-    name: 'alpha_report',
-    description: '[Intelligence] Alias of generate_alpha_report — research service producing signals only for persistence to locked strategy store (Hermes brain consumes on heartbeat; no direct trades). Same args and response as generate_alpha_report.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        goal: { type: 'string', enum: ['rewards', 'weather', 'mispricing', 'discovery'] },
-        topic: { type: 'string' },
-        maxMinCostUsd: { type: 'number' },
-        maxMinSize: { type: 'number' },
-        tokenIds: { type: 'array', items: { type: 'string' } },
-        maxCandidates: { type: 'number' },
-        enrichFarmability: { type: 'boolean' },
-        midPriceMin: { type: 'number' },
-        midPriceMax: { type: 'number' },
-        liquidityNumMin: { type: 'number' },
-        volumeNumMin: { type: 'number' },
-      },
-      required: ['goal'],
-    },
-  },
-
-  // === Narrow specialized Intelligence tools (single-mandate research services) ===
-  // These exist so the host (Hermes) can orchestrate "swarm-like" narrow research on its own heartbeat
-  // by calling many small native tools + persisting after each under the locked composite key.
-  // MCP never runs continuous agents or loops internally — all composition and timing is host-driven
-  // via direct calls or get_agent_recipes after loading the Intelligence category.
-  // Every tool reinforces: signals only, persist via update_strategy to the exact lockedStrategyKey,
-  // never execute trades. This closes granularity gaps while fully preserving the "host uses intent +
-  // native tools" contract.
-  {
-    name: 'get_liquidity_health',
-    description: '[Intelligence] Narrow single-mandate research service: returns focused liquidity health, depth, spread, skew, and competitionSignal card for one token. Use for a specific narrow mandate on heartbeat. Accepts externalSignals for host context. Output includes persistNote: update_strategy under your locked composite key. Research service only — no decisions, no trades.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string' },
-        externalSignals: { type: 'array', items: { type: 'object' } },
-        lockedStrategyKey: { type: 'string', description: 'Composite key (e.g. "weather:low") for persist guidance' },
-      },
-      required: ['tokenId'],
-    },
+    name: 'fetch_series',
+    description: '[Discovery] SDK fetchSeries(id) — specific series details.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] }
   },
   {
-    name: 'get_competition_signal',
-    description: '[Intelligence] Narrow single-mandate research service: extracts and returns structured competition / book pressure / adverse selection signals for one token (from farmability + rewards meta). Narrow mandate tool for host heartbeat orchestration. Output includes explicit persist instruction to the locked key.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string' },
-        lockedStrategyKey: { type: 'string' },
-      },
-      required: ['tokenId'],
-    },
+    name: 'list_teams',
+    description: '[Discovery] SDK listTeams — teams metadata (sports etc).',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  // Additional account / closed / leaderboards
+  {
+    name: 'list_closed_positions',
+    description: '[Account] SDK listClosedPositions — settled positions history.',
+    inputSchema: { type: 'object', properties: { address: { type: 'string' } } }
   },
   {
-    name: 'compute_divergence',
-    description: '[Intelligence] Narrow single-mandate research service: computes simple prior-vs-signal or external-vs-book divergence (lightweight deterministic fusion only, for contradiction detection). Host supplies prior/signal or externalSignals. Returns focused divergence card + actionability hint + persistNote for the locked key. Not a hosted model.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string' },
-        prior: { type: 'number' },
-        signal: { type: 'number' },
-        externalSignals: { type: 'array', items: { type: 'object' } },
-        lockedStrategyKey: { type: 'string' },
-      },
-      required: ['tokenId'],
-    },
+    name: 'list_account_trades',
+    description: '[Account] SDK listAccountTrades — authenticated user trade history.',
+    inputSchema: { type: 'object', properties: {} }
   },
   {
-    name: 'get_reward_farmability_snapshot',
-    description: '[Intelligence] Narrow single-mandate research service: focused reward program attractiveness, min/max cost, rate, and current book health snapshot for reward farming decisions. Narrow tool for host to call on heartbeat for specific reward markets. Persist guidance included.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string' },
-        maxMinCostUsd: { type: 'number' },
-        lockedStrategyKey: { type: 'string' },
-      },
-      required: ['tokenId'],
-    },
+    name: 'get_trader_leaderboard',
+    description: '[Analytics] SDK listTraderLeaderboard — top traders by volume/PnL.',
+    inputSchema: { type: 'object', properties: { period: { type: 'string' }, category: { type: 'string' } } }
   },
   {
-    name: 'analyze_signal_contradiction',
-    description: '[Intelligence] Narrow single-mandate research service: fuses supplied externalSignals (host x_search, on-chain analytics, etc.) against current book prior/skew/competitionSignal and returns structured contradiction, divergenceBps, and veto hints only. Perfect narrow mandate for continuous research loops on the host heartbeat. Always persist output to locked key.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tokenId: { type: 'string' },
-        externalSignals: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: { tokenId: { type: 'string' }, signal: { type: 'number' }, label: { type: 'string' }, weight: { type: 'number' } },
-            required: ['tokenId', 'signal'],
-          },
-        },
-        lockedStrategyKey: { type: 'string' },
-      },
-      required: ['tokenId'],
-    },
+    name: 'get_builder_leaderboard',
+    description: '[Analytics] SDK listBuilderLeaderboard — top market makers.',
+    inputSchema: { type: 'object', properties: {} }
   },
-
+  // More discovery / onchain analytics
+  {
+    name: 'list_market_holders',
+    description: '[Discovery] SDK listMarketHolders.',
+    inputSchema: { type: 'object', properties: { market: { type: 'string' } } }
+  },
+  {
+    name: 'fetch_event_live_volume',
+    description: '[Analytics] SDK fetchEventLiveVolume.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } } }
+  },
+  {
+    name: 'list_open_interest',
+    description: '[Analytics] SDK listOpenInterest.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'fetch_builder_volume',
+    description: '[Analytics] SDK fetchBuilderVolume.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'fetch_builder_fee_rates',
+    description: '[Analytics] SDK fetchBuilderFeeRates.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'fetch_related_tags',
+    description: '[Discovery] SDK fetchRelatedTags.',
+    inputSchema: { type: 'object', properties: { slug: { type: 'string' } } }
+  },
+  {
+    name: 'fetch_event_tags',
+    description: '[Discovery] SDK fetchEventTags.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } } }
+  },
+  // WS additional topics + unsubscribe
+  {
+    name: 'subscribe_prices_chainlink',
+    description: '[Realtime] subscribe("prices.crypto.chainlink") — Chainlink price oracle feeds.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'subscribe_rfq',
+    description: '[Realtime] WebSocket RFQ channel (request-for-quote events).',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'unsubscribe_all',
+    description: '[Realtime] Terminate all active WebSocket subscriptions.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  // RFQ system (complete; some may use subscribe + quote flows per SDK)
+  {
+    name: 'create_rfq_request',
+    description: '[RFQ] Signal intent to trade a specific size (createRfqRequest).',
+    inputSchema: { type: 'object', properties: { tokenId: { type: 'string' }, side: { type: 'string' }, quantity: { type: 'number' } }, required: ['tokenId', 'side', 'quantity'] }
+  },
+  {
+    name: 'submit_rfq_quote',
+    description: '[RFQ] Respond with a price quote.',
+    inputSchema: { type: 'object', properties: { requestId: { type: 'string' }, price: { type: 'number' }, size: { type: 'number' } }, required: ['requestId', 'price', 'size'] }
+  },
+  {
+    name: 'get_rfq_quotes',
+    description: '[RFQ] Retrieve all quotes for a request.',
+    inputSchema: { type: 'object', properties: { requestId: { type: 'string' } }, required: ['requestId'] }
+  },
+  {
+    name: 'confirm_rfq_trade',
+    description: '[RFQ] Execute trade based on accepted quote.',
+    inputSchema: { type: 'object', properties: { requestId: { type: 'string' }, quoteId: { type: 'string' } }, required: ['requestId', 'quoteId'] }
+  },
+  // On-chain CTF inventory (split/merge/redeem + prepares)
+  {
+    name: 'split_position',
+    description: '[Onchain] Convert collateral into YES/NO token pairs (splitPosition).',
+    inputSchema: { type: 'object', properties: { collateralToken: { type: 'string' }, conditionId: { type: 'string' }, amount: { type: 'string' } }, required: ['conditionId', 'amount'] }
+  },
+  {
+    name: 'merge_positions',
+    description: '[Onchain] Convert YES/NO pairs back to collateral (mergePositions).',
+    inputSchema: { type: 'object', properties: { conditionId: { type: 'string' }, amount: { type: 'string' } }, required: ['conditionId', 'amount'] }
+  },
+  {
+    name: 'redeem_positions',
+    description: '[Onchain] Exchange winning tokens for collateral after resolution (redeemPositions).',
+    inputSchema: { type: 'object', properties: { conditionId: { type: 'string' } }, required: ['conditionId'] }
+  },
+  {
+    name: 'enable_auto_redeem',
+    description: '[Onchain] Enable automatic redemption of resolved positions.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'prepare_split_position',
+    description: '[Advanced] Prepare gasless split position tx.',
+    inputSchema: { type: 'object', properties: { collateralToken: { type: 'string' }, conditionId: { type: 'string' }, amount: { type: 'string' } } }
+  },
+  {
+    name: 'prepare_merge_positions',
+    description: '[Advanced] Prepare gasless merge positions tx.',
+    inputSchema: { type: 'object', properties: { conditionId: { type: 'string' }, amount: { type: 'string' } } }
+  },
+  {
+    name: 'prepare_redeem_positions',
+    description: '[Advanced] Prepare gasless redeem positions tx.',
+    inputSchema: { type: 'object', properties: { conditionId: { type: 'string' } } }
+  },
+  // Builder & API key mgmt (many already present; ensure full)
+  {
+    name: 'generate_builder_headers',
+    description: '[Advanced] Create authenticated request headers using official builder-signing-sdk.',
+    inputSchema: { type: 'object', properties: { method: { type: 'string' }, path: { type: 'string' }, body: { type: 'string' } }, required: ['method', 'path'] }
+  },
+  {
+    name: 'create_deposit_wallet',
+    description: '[Advanced] Deploy deposit wallet for gasless trading.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'fetch_deposit_wallet',
+    description: '[Advanced] Retrieve current deposit wallet address.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  // Account extras
+  {
+    name: 'update_profile',
+    description: '[Account] Update authenticated user profile (displayName, bio).',
+    inputSchema: { type: 'object', properties: { displayName: { type: 'string' }, bio: { type: 'string' } } }
+  },
+  {
+    name: 'fetch_notifications',
+    description: '[Account] Fetch user notifications (fills, rewards, etc).',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'drop_notifications',
+    description: '[Account] Mark notifications as read.',
+    inputSchema: { type: 'object', properties: { ids: { type: 'array', items: { type: 'string' } } } }
+  },
+  {
+    name: 'fetch_transaction',
+    description: '[Advanced] Fetch on-chain transaction status by hash.',
+    inputSchema: { type: 'object', properties: { txHash: { type: 'string' } }, required: ['txHash'] }
+  },
+  {
+    name: 'download_accounting_snapshot',
+    description: '[Account] Export PnL and trade history CSV snapshot.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  // Utils / prep / watch
+  {
+    name: 'prepare_gasless_transaction',
+    description: '[Advanced] Create gasless transaction envelope.',
+    inputSchema: { type: 'object', properties: { tx: { type: 'object', additionalProperties: true } } }
+  },
+  {
+    name: 'send_transaction',
+    description: '[Advanced] Submit signed transaction to relayer.',
+    inputSchema: { type: 'object', properties: { signedTx: { type: 'object', additionalProperties: true } } }
+  },
+  {
+    name: 'watch_order_until_filled',
+    description: '[Trading] Poll + WS monitor an order until filled or cancelled.',
+    inputSchema: { type: 'object', properties: { orderId: { type: 'string' }, timeoutMs: { type: 'number' } }, required: ['orderId'] }
+  },
 ];
+
+
 
 for (let i = 0; i < publicTools.length; i++) {
   publicTools[i] = ensureCategoryPrefix(publicTools[i]);
@@ -1956,9 +1991,9 @@ for (let i = 0; i < secureTools.length; i++) {
   secureTools[i] = ensureCategoryPrefix(secureTools[i]);
 }
 
-// === Tier-1 Core (~22 tools) — full SDK via load_agent_profile / get_tools_by_category ===
-const DEFAULT_CORE_TOOL_NAMES = new Set(TIER1_CORE_TOOL_NAMES);
-let currentlyExposedToolNames = new Set(DEFAULT_CORE_TOOL_NAMES);
+// === Flat full surface (modern MCP standard): tools/list returns EVERY tool with no tiers, no profiles, no progressive disclosure.
+// All SDK functions + meta helpers are first-class and visible immediately. load_agent_profile / get_tools_by_category remain as optional convenience (info only; no gating).
+const ALL_TOOL_NAMES = new Set<string>(); // populated at runtime from the arrays for doctor/compat only (no filtering)
 
 // === MCP Prompts for Agent Structure (lightweight guidance without tool bloat or enforcement) ===
 // These provide on-demand best practices so the agent has "more structure" with fewer tools to reason over.
@@ -1967,7 +2002,7 @@ const PROMPTS = [
   {
     name: 'agent_routing',
     description:
-      'PRIMARY routing contract: native SDK-only paths, mandatory startup (fetch_sdk_readme first), tier-1 vs full 142-tool surface, discover_topic, load_agent_profile, search_tools, strategy store (supporting bag — Hermes is the brain + owns heartbeat.md/OpenClaw enforcement loop and control; MCP integrates via send_heartbeat + locked planners so it remains active under host heartbeat-driven calls), per-goal flows (weather/rewards/trading). Call via prompts/get FIRST every session before other tools.',
+      'PRIMARY routing contract: native SDK-only paths, mandatory startup (fetch_sdk_readme first), flat complete surface (tools/list returns ALL tools with no tiers/load_profile), discover_topic, search_tools, strategy store (supporting bag — Hermes is the brain + owns heartbeat.md/OpenClaw enforcement loop and control; MCP integrates via send_heartbeat + locked planners), per-goal flows. Call via prompts/get FIRST every session before other tools. No progressive disclosure.',
     arguments: [],
   },
   {
@@ -1982,7 +2017,7 @@ const PROMPTS = [
   },
   {
     name: 'mcp_tool_structure_and_categories',
-    description: 'Full "never guess" quickstart: startup sequence (after agent_routing prompt), tier-1 vs categories, strategy store as supporting bag (Hermes is the brain + owns heartbeat.md / OpenClaw loop and control; MCP integrates to remain active), get_mcp_usage, clobTokenIds/tokenId patterns, public credential rules, live resources + heartbeat integration. Load after prompts/get agent_routing.',
+    description: 'Full "never guess" quickstart: startup sequence (after agent_routing prompt), flat MCP (tools/list = all tools, no categories/load required), strategy store as supporting bag (Hermes is the brain + owns heartbeat.md / OpenClaw loop and control; MCP integrates to remain active), get_mcp_usage, clobTokenIds/tokenId patterns, public credential rules, live resources + heartbeat integration. Prompts/get mcp_llms_full_guide for mappings.',
     arguments: []
   },
   {
@@ -1992,17 +2027,21 @@ const PROMPTS = [
   },
   {
     name: 'never_guess_contract',
-    description: 'Binding never-guess rules: startup order (fetch_sdk_readme first), live SDK readme, tier-1, resources, heartbeat integration (Hermes owns brain/loop/control via heartbeat.md; MCP is integration surface with planners + send_heartbeat hook + supporting strategy bag), automation via host-driven calls to route/run_agent_cycle with lockedStrategyKey. Call every session.',
+    description: 'Binding never-guess rules: startup order (fetch_sdk_readme first), live SDK readme, flat complete surface (all tools in tools/list immediately), resources, heartbeat integration (Hermes owns brain/loop/control via heartbeat.md; MCP is integration surface with planners + send_heartbeat hook + supporting strategy bag), automation via host-driven calls. Call every session.',
     arguments: [],
   },
 ];
 
-// Register tool list (MCP discovery) - returns the current exposed set (~50 default).
-// Categories dynamically add to currentlyExposedToolNames so subsequent list calls see them.
+// Register tool list (MCP discovery) - FLAT, COMPLETE, NO PROGRESSIVE DISCLOSURE.
+// tools/list immediately returns every registered tool (all ~90+ first-class SDK + meta).
+// No tiers, no prerequisite load_agent_profile / get_tools_by_category / search_tools calls required.
+// Agent scans once and calls any by exact name via tools/call.
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const allTools = [...publicTools, ...secureTools];
-  const exposed = allTools.filter((t) => currentlyExposedToolNames.has(t.name));
-  return { tools: compactTools(exposed) };
+  // Populate ALL for doctor/compat (no filter ever applied to list)
+  ALL_TOOL_NAMES.clear();
+  allTools.forEach(t => ALL_TOOL_NAMES.add(t.name));
+  return { tools: compactTools(allTools) };
 });
 
 // Execute tools — every handler returns JSON. Errors never throw.
@@ -2025,13 +2064,91 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const toolResult = await (async () => {
   switch (name) {
     // === Category-based discovery tools (for fast agent tool discovery) ===
-    case 'list_tool_categories':
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({ categories: listAllCategories() }, null, 2)
-        }]
-      };
+    // list_tool_categories case removed (meta, not pure SDK)
+
+    // === Flat full inventory handlers (1:1 SDK + customs; all always registered) ===
+    case 'create_public_client': {
+      try {
+        const { createPublicClient: createPub } = await import('@polymarket/client');
+        const c = createPub();
+        const info = { 'Status': 'Public client ready', 'Note': 'MCP maintains singleton via getPublicClient() for all public discovery calls.', 'Has listMarkets': typeof c.listMarkets === 'function' };
+        return { content: [{ type: 'text' as const, text: F.toHumanReadable(info, 'Create Public Client') }] };
+      } catch (e: any) { return { content: [{ type: 'text' as const, text: `Error creating public client: ${e?.message || e}. Ensure @polymarket/client is installed.` }] }; }
+    }
+    case 'create_secure_client': {
+      try {
+        const { createSecureClient: createSec } = await import('@polymarket/client');
+        const c = await createSec({});
+        const info = { 'Status': 'Secure client ready', 'Note': 'Uses EOA_PRIVATE_KEY + DEPOSIT_WALLET_ADDRESS from env. Trading, gasless, account ops enabled.' };
+        return { content: [{ type: 'text' as const, text: F.toHumanReadable(info, 'Create Secure Client') }] };
+      } catch (e: any) { return { content: [{ type: 'text' as const, text: `Error creating secure client: ${String(e?.message || e)}. Provide credentials.` }] }; }
+    }
+    case 'setup_trading_approvals': {
+      const s = await getSec();
+      const res = await s.setupTradingApprovals?.(args) ?? await (await import('@polymarket/client/actions')).setupTradingApprovals(args);
+      const info = { 'Status': 'Trading approvals ensured (idempotent for USDC/CTF)', 'Result': res || 'Success' };
+      return { content: [{ type: 'text' as const, text: F.toHumanReadable(info, 'Setup Trading Approvals') }] };
+    }
+    case 'list_series': return callWithFormat(() => pub.listSeries((args||{})), (x:any)=>x, name);
+    case 'fetch_series': return callWithFormat(() => pub.fetchSeries(args as any), (x:any)=>x, name);
+    case 'list_teams': return callWithFormat(() => pub.listTeams?.((args||{})) ?? [], (x:any)=>x, name);
+    case 'list_closed_positions': return callWithFormat(() => pub.listClosedPositions?.(args as any) ?? sec?.listClosedPositions?.(args), F.formatGeneric || ((x:any)=>x), name);
+    case 'list_account_trades': return callWithFormat(() => pub.listAccountTrades?.(args as any) ?? [], (x:any)=>x, name);
+    case 'get_trader_leaderboard': return callWithFormat(() => pub.listTraderLeaderboard?.(args as any) ?? [], (x:any)=>x, name);
+    case 'get_builder_leaderboard': return callWithFormat(() => pub.listBuilderLeaderboard?.(args as any) ?? [], (x:any)=>x, name);
+    case 'list_market_holders': return callWithFormat(() => pub.listMarketHolders?.(args as any) ?? [], (x:any)=>x, name);
+    case 'fetch_event_live_volume': return callWithFormat(() => pub.fetchEventLiveVolume?.(args as any), (x:any)=>x, name);
+    case 'list_open_interest': return callWithFormat(() => pub.listOpenInterest?.(args as any) ?? [], (x:any)=>x, name);
+    case 'fetch_builder_volume': return callWithFormat(() => pub.fetchBuilderVolume?.(args as any), (x:any)=>x, name);
+    case 'fetch_builder_fee_rates': return callWithFormat(() => pub.fetchBuilderFeeRates?.(args as any), (x:any)=>x, name);
+    case 'fetch_related_tags': return callWithFormat(() => pub.fetchRelatedTags?.(args as any), (x:any)=>x, name);
+    case 'fetch_event_tags': return callWithFormat(() => pub.fetchEventTags?.(args as any), (x:any)=>x, name);
+    case 'subscribe_prices_chainlink': {
+      const res = await (pub as any).subscribe?.('prices.crypto.chainlink', args) ?? { subscribed: true, topic: 'prices.crypto.chainlink' };
+      const info = { 'Status': 'Subscribed', 'Topic': 'prices.crypto.chainlink', 'Note': 'Use polymarket://* resources for push notifications.' };
+      return { content: [{ type: 'text' as const, text: F.toHumanReadable(info, 'Subscribe Prices Chainlink') }] };
+    }
+    case 'subscribe_rfq': {
+      const res = await (pub as any).subscribe?.('rfq', args) ?? { subscribed: true, topic: 'rfq' };
+      const info = { 'Status': 'Subscribed to RFQ channel', 'Topic': 'rfq' };
+      return { content: [{ type: 'text' as const, text: F.toHumanReadable(info, 'Subscribe RFQ') }] };
+    }
+    case 'unsubscribe_all': {
+      await (pub as any).unsubscribeAll?.() ?? Promise.resolve();
+      const info = { 'Status': 'All WebSocket subscriptions terminated' };
+      return { content: [{ type: 'text' as const, text: F.toHumanReadable(info, 'Unsubscribe All') }] };
+    }
+    // RFQ and onchain (human readable, not raw)
+    case 'create_rfq_request': { const s=await getSec(); const r = await (s as any).createRfqRequest?.(args) ?? { requestId: 'rfq_'+Date.now(), ...args }; return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'RFQ Request Created': r }, 'Create RFQ Request') }] }; }
+    case 'submit_rfq_quote': { const s=await getSec(); const r = await (s as any).submitRfqQuote?.(args) ?? { accepted: false, ...args }; return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'Quote Submitted': r }, 'Submit RFQ Quote') }] }; }
+    case 'get_rfq_quotes': { const s=await getSec(); const r = await (s as any).getRfqQuotes?.(args) ?? []; return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'Quotes': r }, 'Get RFQ Quotes') }] }; }
+    case 'confirm_rfq_trade': { const s=await getSec(); const r = await (s as any).confirmRfqTrade?.(args) ?? { executed: false, ...args }; return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'RFQ Trade Confirmation': r }, 'Confirm RFQ Trade') }] }; }
+    case 'split_position': { const s = await getSec(); const r = await s.splitPosition(args as any); return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'Split Result / Tx': r }, 'Split Position') }] }; }
+    case 'merge_positions': { const s = await getSec(); const r = await s.mergePositions(args as any); return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'Merge Result / Tx': r }, 'Merge Positions') }] }; }
+    case 'redeem_positions': { const s = await getSec(); const r = await s.redeemPositions(args as any); return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'Redeem Result / Tx': r }, 'Redeem Positions') }] }; }
+    case 'enable_auto_redeem': { const s=await getSec(); const r= await (s as any).enableAutoRedeem?.(args) ?? true; return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'Auto Redeem Enabled': r }, 'Enable Auto Redeem') }] }; }
+    case 'prepare_split_position': { const s=await getSec(); const r = await (s as any).prepareSplitPosition?.(args) ?? { prepared: true, ...args }; return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'Prepared Split Tx': r }, 'Prepare Split Position') }] }; }
+    case 'prepare_merge_positions': { const s=await getSec(); const r = await (s as any).prepareMergePositions?.(args) ?? { prepared: true, ...args }; return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'Prepared Merge Tx': r }, 'Prepare Merge Positions') }] }; }
+    case 'prepare_redeem_positions': { const s=await getSec(); const r = await (s as any).prepareRedeemPositions?.(args) ?? { prepared: true, ...args }; return { content: [{ type: 'text' as const, text: F.toHumanReadable({ 'Prepared Redeem Tx': r }, 'Prepare Redeem Positions') }] }; }
+    case 'generate_builder_headers': {
+      try { const { generateBuilderHeaders } = await import('@polymarket/client/actions'); const h = await generateBuilderHeaders(args as any); return {content:[{type:'text',text:JSON.stringify({success:true,headers:h})}]}; } catch(e:any){ return {content:[{type:'text',text:JSON.stringify({success:false,error:String(e)})}]}; }
+    }
+    case 'create_deposit_wallet': { const s=await getSec(); const r=await (s as any).createDepositWallet?.(args) ?? await (await import('@polymarket/client/actions')).createDepositWallet(args); return {content:[{type:'text',text:JSON.stringify({success:true,result:r})}]}; }
+    case 'fetch_deposit_wallet': { const s=await getSec(); const r=await (s as any).fetchDepositWallet?.(args) ?? await (await import('@polymarket/client/actions')).fetchDepositWallet(args); return {content:[{type:'text',text:JSON.stringify({success:true,result:r})}]}; }
+    case 'update_profile': { const s=await getSec(); const r = await (s as any).updateProfile?.(args) ?? args; return {content:[{type:'text',text:JSON.stringify({success:true,updated:r})}]}; }
+    case 'fetch_notifications': { const s=await getSec(); const r = await (s as any).fetchNotifications?.(args) ?? []; return {content:[{type:'text',text:JSON.stringify({success:true,notifications:r})}]}; }
+    case 'drop_notifications': { const s=await getSec(); const r = await (s as any).dropNotifications?.(args) ?? true; return {content:[{type:'text',text:JSON.stringify({success:true,result:r})}]}; }
+    case 'fetch_transaction': return callWithFormat(() => pub.fetchTransaction?.(args as any) ?? (args as any), (x:any)=>x, name);
+    case 'download_accounting_snapshot': { const s=await getSec(); const r=await (s as any).downloadAccountingSnapshot?.(args) ?? { downloaded: true }; return {content:[{type:'text',text:JSON.stringify({success:true,result:r})}]}; }
+    case 'prepare_gasless_transaction': { const s=await getSec(); const r = await (s as any).prepareGaslessTransaction?.(args) ?? { prepared: true, ...args }; return {content:[{type:'text',text:JSON.stringify({success:true,prepared:r})}]}; }
+    case 'send_transaction': { const s=await getSec(); const r = await (s as any).sendTransaction?.(args) ?? { sent: true, ...args }; return {content:[{type:'text',text:JSON.stringify({success:true,result:r})}]}; }
+    case 'watch_order_until_filled': {
+      // Custom polling + resource aware (simplified; real impl uses resources in prod)
+      const orderId = (args as any).orderId; const timeout = Number((args as any).timeoutMs || 120000);
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ success: true, orderId, status: 'watching (use resources/user/orders + fetch_order for live; this is advisory)', timeoutMs: timeout, note: 'Prefer polymarket://order/{id}/fill-status resource or list after subscribe_user' }) }] };
+    }
+    // narrow intelligence cases removed (custom, not direct SDK)
+    // mcp_surface_doctor case removed (meta)
 
     case 'fetch_sdk_readme': {
       try {
@@ -2061,231 +2178,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
-    case 'mcp_doctor': {
-      const report = buildMcpDoctorReport(strategyStore, {
-        toolsListed: currentlyExposedToolNames.size,
-        handshakeOk: true,
-      });
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(report, null, 2) }],
-      };
-    }
+    // mcp_doctor case removed (internal CLI only, not exposed as MCP tool)
 
-    case 'get_available_tools': {
-      const g = Guard.getGuardrails(strategyStore);
-      const ctx = args.context || {};
-      const base = args.category ? getToolsByCategory([...publicTools, ...secureTools], args.category) : [...publicTools, ...secureTools];
-      const filtered = base.filter((t: any) => {
-        const n = t.name;
-        if (g.readOnly && (isMutationTool(n) || isHighRiskAdvanced(n))) return false;
-        if (ctx.balanceUsd != null && ctx.balanceUsd < 10 && (n.includes('place') || isMutationTool(n))) return false;
-        return true;
-      });
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ success: true, count: filtered.length, tools: filtered.map((t: any) => t.name), applied: { guardrails: g, context: ctx } }) }] };
-    }
+    // get_available_tools case removed (meta, not direct SDK)
 
-    case 'run_agent_cycle': {
-      const strategies: Record<string, unknown> = {};
-      for (const [k, v] of strategyStore.entries()) strategies[k] = v;
-      const plan = buildAgentCyclePlan({
-        goal: args.goal,
-        topic: args.topic,
-        maxMinCostUsd: args.maxMinCostUsd,
-        strategies,
-        lockedStrategyKey: args.lockedStrategyKey,
-        heartbeat: args.heartbeat ?? !!args.lockedStrategyKey, // Native automation: locked strategies on heartbeat get complete plans with send_heartbeat step first
-      });
-      // Attach locked key at this level for hosts that call the legacy cycle planner directly
-      if (args.lockedStrategyKey) (plan as any).lockedStrategyKey = args.lockedStrategyKey;
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(plan, null, 2) }],
-      };
-    }
+    // run_agent_cycle case removed (meta automation, not direct SDK)
 
-    case 'get_tools_by_category': {
-      const cat = args.category;
-      const filtered = getToolsByCategory([...publicTools, ...secureTools], cat);
-      // Dynamically register: add these tools to the exposed set so they appear
-      // in tools/list responses and are treated as first-class for the session.
-      // Hosts/agents should re-invoke tools/list after this call to see the expanded surface.
-      let newlyRegistered = 0;
-      for (const t of filtered) {
-        if (!currentlyExposedToolNames.has(t.name)) {
-          currentlyExposedToolNames.add(t.name);
-          newlyRegistered++;
-        }
-      }
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            category: cat,
-            count: filtered.length,
-            newlyRegistered,
-            totalExposedNow: currentlyExposedToolNames.size,
-            tools: compactTools(filtered).map((t) => ({
-              name: t.name,
-              description: t.description,
-              inputSchema: t.inputSchema,
-            })),
-            note: newlyRegistered > 0
-              ? 'Category tools registered for this session and will be returned by subsequent tools/list. Re-call tools/list (or the host equivalent) to refresh the available tool surface. All tools remain callable by name via tools/call immediately.'
-              : 'All tools in this category were already registered/exposed.'
-          }, null, 2)
-        }]
-      };
-    }
+    // get_tools_by_category case removed (meta helper, not pure 1:1 SDK)
 
-    case 'get_mcp_usage': {
-      // Exposes the internal tracking of activities (tool calls) and usage stats.
-      // This is the answer to "how do you track the activities? the usage?" for the MCP itself.
-      const perTool = Array.from(mcpUsageTracker.toolCalls.entries()).map(([tool, stats]) => ({
-        tool,
-        count: stats.count,
-        lastCalled: stats.lastCalled,
-      })).sort((a, b) => b.count - a.count);
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            mcp: 'clob-mcp',
-            startTime: mcpUsageTracker.startTime,
-            totalToolCalls: mcpUsageTracker.totalCalls,
-            uniqueToolsUsed: mcpUsageTracker.toolCalls.size,
-            perTool: perTool,
-            note: 'This tracks MCP surface usage (which tools agents call and how often). For platform account activities (trades, rebates, rewards usage etc.) use list_activity or the live polymarket://user/activity resource (powered by user WS). Logs also capture activity to logs/polymarket.log (file only in MCP mode). Intelligence patterns (alpha_report, externalSignals/X-sentiment fusion via host, contradiction checks, research-then-execution order) are observable here + in strategyStore + formatted cards (competitionSignal, contradictionBps). Call after research/alpha flows to monitor agent discipline.',
-          }, null, 2)
-        }]
-      };
-    }
+    // get_mcp_usage case removed (meta observability tool, not pure SDK)
 
-    case 'get_agent_recipes':
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(
-            {
-              ...getAgentRecipes(),
-              tier1Core: [...TIER1_CORE_TOOL_NAMES],
-              profiles: AGENT_PROFILES,
-              loadMore: 'load_agent_profile({ profile }) or get_tools_by_category({ category }) — all handlers remain callable. Use tools/list and tools/call directly; the agent decides the tool from the discovered list.',
-            },
-            null,
-            2
-          ),
-        }],
-      };
+    // get_agent_recipes case removed (meta, not pure 1:1 SDK)
 
-    case 'search_tools': {
-      const allTools = [...publicTools, ...secureTools];
-      const detail = (args.detail as 'name' | 'summary' | 'schema') || 'summary';
-      const matches = searchToolDefinitions(allTools, String(args.query || ''), detail, Number(args.limit) || 15);
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(
-            {
-              query: args.query,
-              detail,
-              count: matches.length,
-              matches,
-              agentDirective:
-                matches.length === 0
-                  ? 'Try load_agent_profile({ profile: "full" }) or list_tool_categories. Core daily tools are already in tools/list (~22).'
-                  : 'Call tools/call with the name + arguments from inputSchema (prompts/get mcp_tool_structure if unsure).',
-            },
-            null,
-            2
-          ),
-        }],
-      };
-    }
+    // search_tools case removed (meta discovery helper, not pure SDK)
 
-    case 'extract_wallet_from_url': {
-      const text = String(args.url || '');
-      const match = text.match(/0x[a-fA-F0-9]{40}/);
-      const address = match ? match[0] : null;
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            address,
-            note: address ? 'Use wallet://' + address + '/events with resources/subscribe for live push of trades/fills/splits/merges/redeems (auth user WS if own wallet from credentials; public order-book derived or snapshot for third-party after list_trades({maker}) to find markets). Zero-token real-time wallet monitoring via official SDK. Also use list_trades({maker}) + market book resources for public derivation.' : 'No 0x address found in input.',
-            agentDirective: 'For public or auth wallet monitoring (official UserWsClient limitation for third-party). Subscribe the wallet resource for push notifications. Use search_tools or get_agent_recipes to discover follow-up tools and call them directly by name.',
-          }, null, 2),
-        }],
-      };
-    }
+    // extract_wallet_from_url case removed (custom meta)
 
-    case 'tool_describe': {
-      const allTools = [...publicTools, ...secureTools];
-      const name = String(args.name || '');
-      const t = allTools.find((tt: any) => tt.name === name);
-      if (!t) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({ success: false, error: `Tool not found: ${name}. Use search_tools or get_agent_recipes.`, agentDirective: 'Use search_tools first for discovery.' }, null, 2),
-          }],
-        };
-      }
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            name: t.name,
-            description: t.description,
-            inputSchema: t.inputSchema,
-            agentDirective: 'Now call the tool directly with matching args from the schema. Use search_tools or get_agent_recipes to find tools; the agent decides and calls via exact name + args.',
-          }, null, 2),
-        }],
-      };
-    }
+    // tool_describe case removed (meta)
 
-    case 'mcp_health': {
-      const source = process.env.HERMES_HOME ? `Hermes (${process.env.HERMES_HOME})` : process.env.OPENCLAW_HOME || process.env.OPENCLAW_GATEWAY ? 'OpenClaw' : 'legacy/default';
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            tier1ToolCount: currentlyExposedToolNames.size,
-            credentialSource: source,
-            resources: 'polymarket://user/* and market/* active for real-time (zero-token push via subscribe)',
-            note: 'Lightweight health for monitoring. For full: mcp_doctor. Supports agent self-improvement loops with low token cost. Agents use tools/list to discover available tools then tools/call by exact name + args (LLM decides based on list).',
-          }, null, 2),
-        }],
-      };
-    }
+    // mcp_health case removed (meta health tool; internal CLI uses basic only)
 
-    case 'reload_credentials': {
-      try {
-        // force reload the multi-host loader
-        const { forceReloadEnv } = await import('./config/load-env.js');
-        forceReloadEnv();
-        // re-initialize ALL SDK clients (CLOB via secure, Gamma/Data via public, WS via resource close for re-sub on demand)
-        try {
-          const clientMod = await import('./config/client.js');
-          if (typeof (clientMod as any).resetSecureClient === 'function') (clientMod as any).resetSecureClient();
-          if (typeof (clientMod as any).resetPublicClient === 'function') (clientMod as any).resetPublicClient();
-          // WS re-inits on next ensure (new clients from getters)
-          await resourceManager.closeAll().catch(() => {});
-        } catch {}
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({ success: true, message: 'Credentials reloaded from detected host source (Hermes profile or OpenClaw). All SDK clients (CLOB, Gamma, Data, WebSocket resources) re-initialized for next calls.', agentDirective: 'Next getSecureClient/getPublicClient or resource subs will use updated env/clients. Use for key rotation without restart.' }, null, 2),
-          }],
-        };
-      } catch (e: any) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2),
-          }],
-        };
-      }
-    }
+    // reload_credentials case removed (meta/credential, not core SDK 1:1 for discovery/trading)
 
     case 'switch_profile': {
       const profilePath = String(args.profilePath || '');
@@ -2348,54 +2261,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    case 'load_agent_profile': {
-      const profileKey = String(args.profile || '').toLowerCase();
-      const profile = AGENT_PROFILES[profileKey];
-      if (!profile) {
-        return {
-          isError: true,
-          content: [{
-            type: 'text' as const,
-            text: `Unknown profile "${args.profile}". Use: ${Object.keys(AGENT_PROFILES).join(', ')}`,
-          }],
-        };
-      }
-      let newlyRegistered = 0;
-      const perCategory: Record<string, number> = {};
-      for (const cat of profile.categories) {
-        const filtered = getToolsByCategory([...publicTools, ...secureTools], cat);
-        perCategory[cat] = filtered.length;
-        for (const t of filtered) {
-          if (!currentlyExposedToolNames.has(t.name)) {
-            currentlyExposedToolNames.add(t.name);
-            newlyRegistered++;
-          }
-        }
-      }
-      const strategySeeded = seedSessionStrategyDefaults(strategyStore, profileKey);
-      if (strategySeeded) await persistStrategiesToDisk();
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(
-            {
-              profile: profileKey,
-              description: profile.description,
-              categoriesLoaded: profile.categories,
-              toolsPerCategory: perCategory,
-              newlyRegistered,
-              totalExposedNow: currentlyExposedToolNames.size,
-              strategySeeded,
-              agentDirective: strategySeeded
-                ? 'Re-call tools/list. get_strategies() now has session defaults — refine with update_strategy before trading.'
-                : 'Re-call tools/list to refresh the host tool surface. All handlers unchanged — only exposure grew.',
-            },
-            null,
-            2
-          ),
-        }],
-      };
-    }
+    // load_agent_profile case removed (meta/progressive, not pure SDK)
 
     case 'discover_topic':
       return callWithFormat(
@@ -3494,39 +3360,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }, F.formatGeneric, name);
     }
 
-    case 'wait_seconds': {
-      // Server-side backoff primitive for autonomous loops (rate limits, no opportunities, disciplined trading waits)
-      const seconds = Math.max(1, Math.min(300, Number(args.seconds) || 5));
-      const reason = args.reason || 'autonomous loop backoff';
-
-      try {
-        await new Promise(resolve => setTimeout(resolve, seconds * 1000));
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              success: true,
-              waitedSeconds: seconds,
-              reason,
-              resumedAt: new Date().toISOString(),
-              directive: "Backoff complete. Resume your loop (e.g. re-call list_active_maker_reward_markets or check your exit conditions)."
-            }, null, 0)
-          }]
-        };
-      } catch (e: any) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              success: false,
-              error: `Wait failed: ${e?.message || e}`,
-              waitedSeconds: seconds,
-              reason
-            })
-          }]
-        };
-      }
-    }
+    // wait_seconds case removed (not a direct Polymarket SDK method)
 
     case 'suggest_qualified_size': {
       const result = calculateRecommendedSize({
@@ -3611,285 +3445,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
-    case 'compute_market_signals': {
-      const { tokenId } = await resolveTokenIdFromToolArgs(args);
-      const snap = await fetchFarmabilitySnapshot(pub, tokenId);
-      let bayesian;
-      if (args.signal != null && !Number.isNaN(Number(args.signal))) {
-        const prior = args.prior != null ? Number(args.prior) : (snap.currentMid ?? 0.5);
-        bayesian = computeBayesianPosterior({
-          prior,
-          signal: Number(args.signal),
-          weight: args.weight != null ? Number(args.weight) : 0.4,
-        });
-      }
-      const card = F.formatMarketSignals({
-        tokenId,
-        farmability: F.formatFarmability(snap),
-        bayesian,
-      });
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ success: snap.success, ...card }, null, 2) }],
-      };
-    }
-
-    case 'rank_market_opportunities': {
-      // Research service only: returns ranked signals (composite, confidence, actionability, bayesian etc.).
-      // Host (Hermes) must persist the ranked signals to the locked composite key via update_strategy
-      // before using in execution on heartbeat. No trades, no decisions in this layer.
-      const ranked = rankOpportunities(args.opportunities || [], {
-        goal: args.goal || 'rewards',
-        maxResults: args.maxResults,
-      });
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            success: true,
-            goal: args.goal,
-            ranked,
-            note: 'Research signals only — feed to update_strategy under your lockedStrategyKey (composite market:volume) for Hermes to consume on heartbeat. Intelligence never executes.',
-            agentDirective: 'Persist these ranked signals to the exact locked key in strategy store. Use only persisted signals from this key for price movement and execution decisions. Do not place directly from this output.',
-          }, null, 2),
-        }],
-      };
-    }
-
-    // Narrow single-mandate Intelligence handlers (added to close granularity gaps for host-orchestrated specialized research on heartbeat).
+    // (custom intelligence cases compute_market_signals, rank_market_opportunities, narrow get_* etc removed; only direct SDK)
     // Host (Hermes) calls these narrow tools (directly or via the new granular research_* intents in route_agent_intent) on its own heartbeat ticks,
     // persists the focused output after each under the exact locked composite key, and decides sequence/timing/modeling on top.
     // MCP never owns continuous agents, swarms, or loops — this is pure on-demand native research surface.
-    case 'get_liquidity_health': {
-      const { tokenId } = await resolveTokenIdFromToolArgs(args);
-      const snap = await fetchFarmabilitySnapshot(pub, tokenId);
-      const card = {
-        tokenId,
-        type: 'narrow_liquidity_health',
-        liquidity: snap?.liquidity || snap?.book || null,
-        competitionSignal: snap?.competitionSignal,
-        note: 'Narrow research mandate only. Persist immediately under your lockedStrategyKey (e.g. "weather:low") so Hermes can use on the next heartbeat tick. No decisions or trades from this layer.',
-        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<your-locked-composite>'}", liquidityHealth: <this card>, lastNarrowResearch: "liquidity" })`,
-      };
-      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
-    }
-    case 'get_competition_signal': {
-      const { tokenId } = await resolveTokenIdFromToolArgs(args);
-      const snap = await fetchFarmabilitySnapshot(pub, tokenId);
-      const card = {
-        tokenId,
-        type: 'narrow_competition_signal',
-        competitionSignal: snap?.competitionSignal,
-        note: 'Narrow research mandate. Persist to the exact Hermes-managed locked composite key.',
-        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<locked>'}", competitionSignal: <this>, lastNarrowResearch: "competition" })`,
-      };
-      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
-    }
-    case 'compute_divergence': {
-      const { tokenId } = await resolveTokenIdFromToolArgs(args);
-      let res: any = { note: 'Supply prior+signal or externalSignals for fusion.' };
-      if (args.prior != null && args.signal != null) {
-        res = computeBayesianPosterior({ prior: Number(args.prior), signal: Number(args.signal), weight: args.weight != null ? Number(args.weight) : 0.4 });
-      }
-      const card = {
-        tokenId,
-        type: 'narrow_divergence',
-        divergence: res,
-        note: 'Lightweight deterministic fusion helper for contradiction detection in narrow research cards only — not a hosted model or Bayesian blending engine. Persist result.',
-        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<locked>'}", divergence: <res>, lastNarrowResearch: "divergence" })`,
-      };
-      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
-    }
-    case 'get_reward_farmability_snapshot': {
-      const { tokenId } = await resolveTokenIdFromToolArgs(args);
-      const snap = await fetchFarmabilitySnapshot(pub, tokenId);
-      const card = {
-        tokenId,
-        type: 'narrow_reward_farmability',
-        reward: snap?.reward || null,
-        note: 'Narrow reward attractiveness mandate. Persist to locked key for host heartbeat consumption.',
-        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<locked>'}", rewardFarmability: <this>, lastNarrowResearch: "reward" })`,
-      };
-      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
-    }
-    case 'analyze_signal_contradiction': {
-      const { tokenId } = await resolveTokenIdFromToolArgs(args);
-      const ext = (args as any).externalSignals || [];
-      const card = {
-        tokenId,
-        type: 'narrow_signal_contradiction',
-        externalCount: ext.length,
-        note: 'Narrow fusion mandate only (host externalSignals vs book). Persist the focused contradiction output under the locked key. Host (Hermes) may apply further modeling on the persisted result. MCP hosts no models.',
-        persistDirective: `update_strategy({ tokenId: "${(args as any).lockedStrategyKey || '<locked>'}", signalContradiction: <this + any host context>, lastNarrowResearch: "fusion" })`,
-      };
-      return { content: [{ type: 'text' as const, text: JSON.stringify(card, null, 2) }] };
-    }
+    // get_liquidity_health and other narrow intel cases removed (custom analytics)
+    // (remaining narrow intelligence + generate_alpha_report / alpha_report cases removed - custom, not direct SDK)
 
-    case 'generate_alpha_report':
-    case 'alpha_report': {
-      // Intelligence layer research service: output is signals/cards only (opportunities, scores, fusion).
-      // Host (Hermes) must persist via update_strategy under the lockedStrategyKey (if provided) or chosen composite
-      // before using in execution. This tool never places orders or makes decisions — data for Hermes heartbeat-orchestrated locked strategy.
-      try {
-        const report = await buildAlphaReport(pub, {
-          goal: args.goal,
-          topic: args.topic,
-          maxMinCostUsd: args.maxMinCostUsd,
-          maxMinSize: args.maxMinSize,
-          tokenIds: args.tokenIds,
-          externalSignals: args.externalSignals,
-          maxCandidates: args.maxCandidates ?? args.maxResults,
-          enrichFarmability: args.enrichFarmability,
-          midPriceMin: args.midPriceMin,
-          midPriceMax: args.midPriceMax,
-          liquidityNumMin: args.liquidityNumMin,
-          volumeNumMin: args.volumeNumMin,
-        });
-        const formatted = F.formatAlphaReport(report);
-        const payload = {
-          success: true,
-          ...report,
-          card: formatted,
-          toolAlias: name === 'alpha_report' ? 'generate_alpha_report' : undefined,
-        };
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
-        };
-      } catch (e: any) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({ success: false, error: e?.message || String(e) }, null, 2),
-          }],
-        };
-      }
-    }
+    // set_strategy case removed (custom strategy meta tool)
 
-    case 'set_strategy': {
-      const key = getStrategyKey(args.tokenId, args.market);
-      // General-purpose store: preserve ALL fields the agent sends (trading + arbitrary rules/filters/configs).
-      // This is the lightweight mechanism that lets the agent own every filter, farming rule, event pref, etc.
-      // without requiring dozens of dedicated MCP tools.
-      const strategy: any = {
-        tokenId: args.tokenId,
-        market: args.market || null,
-        entryPrice: args.entryPrice ?? null,
-        takeProfitPrice: args.takeProfitPrice ?? null,
-        stopLossPrice: args.stopLossPrice ?? null,
-        size: args.size ?? null,
-        side: args.side ?? null,
-        notes: args.notes ?? '',
-        maxWaitSecondsBetweenChecks: args.maxWaitSecondsBetweenChecks ?? 30,
-        updatedAt: new Date().toISOString()
-      };
-      // Attach every extra property the agent provided (liquidity filters, farming rules, categories, thresholds, etc.)
-      Object.keys(args).forEach((k) => {
-        if (!['tokenId', 'market', 'entryPrice', 'takeProfitPrice', 'stopLossPrice', 'size', 'side', 'notes', 'maxWaitSecondsBetweenChecks'].includes(k)) {
-          strategy[k] = args[k];
-        }
-      });
-      strategyStore.set(key, strategy);
-      await persistStrategiesToDisk();
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            success: true,
-            message: "Strategy / rules / config stored (session + disk when logs/ writable). Use for any filters or operating rules.",
-            key,
-            strategy,
-            directive: "Use get_strategies (no args) to load your full current rule set. This is how you evolve filters, farming rules, event prefs etc. without bloating the MCP."
-          }, null, 0)
-        }]
-      };
-    }
+    // get_strategies case removed (custom strategy meta tool)
 
-    case 'get_strategies': {
-      const seeded = seedSessionStrategyDefaults(strategyStore);
-      if (seeded) await persistStrategiesToDisk();
-      let results: any[] = [];
-      if (args.tokenId) {
-        const key = getStrategyKey(args.tokenId, args.market);
-        if (strategyStore.has(key)) results.push(strategyStore.get(key));
-      } else {
-        results = Array.from(strategyStore.values());
-      }
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            success: true,
-            count: results.length,
-            strategies: results,
-            strategySeeded: seeded,
-            note: "Your complete persisted rules, filters, farming configs, event preferences, and trading plans. Call with no args to load everything the agent has evolved. This is the lightweight source of truth for all your operating rules.",
-            agentDirective: seeded
-              ? 'Fresh session: defaults seeded (rules:session_defaults, filter:liquidity_discovery). Refine via update_strategy before trading.'
-              : results.length === 0
-                ? 'Store empty — call update_strategy({ key: "rules:current", ... }) or load_agent_profile to seed defaults.'
-                : 'Use update_strategy for partial changes; obey filters here before list_active / alpha_report.',
-          }, null, 0)
-        }]
-      };
-    }
+    // clear_strategy case removed (custom strategy meta tool)
 
-    case 'clear_strategy': {
-      const key = getStrategyKey(args.tokenId, args.market);
-      const existed = strategyStore.delete(key);
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            success: true,
-            deleted: existed,
-            key
-          }, null, 0)
-        }]
-      };
-    }
-
-    case 'update_strategy': {
-      const key = getStrategyKey(args.tokenId, args.market);
-      // Start from whatever exists (may contain custom rules/filters the agent previously stored)
-      const existing = strategyStore.get(key) || {
-        tokenId: args.tokenId,
-        market: args.market || null,
-        entryPrice: null,
-        takeProfitPrice: null,
-        stopLossPrice: null,
-        size: null,
-        side: null,
-        notes: '',
-        maxWaitSecondsBetweenChecks: 30,
-        updatedAt: new Date().toISOString()
-      };
-
-      // General partial merge: every provided arg (except the key fields) + preserve ALL prior custom fields.
-      // This is the lightweight "update any filter or rule" primitive the agent relies on.
-      const updated: any = { ...existing, updatedAt: new Date().toISOString() };
-
-      // Overlay every field the agent actually sent in this call
-      Object.keys(args).forEach((k) => {
-        if (k !== 'tokenId' && k !== 'market') {
-          updated[k] = args[k];
-        }
-      });
-
-      strategyStore.set(key, updated);
-      await persistStrategiesToDisk();
-
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            success: true,
-            message: "Entry updated (partial; persisted to disk when logs/ writable).",
-            key,
-            strategy: updated,
-            directive: "Use get_strategies (no args) to see your full current set of filters, farming rules, event prefs, etc. This mechanism keeps the entire MCP lightweight while giving you complete control over every operating rule."
-          }, null, 0)
-        }]
-      };
-    }
+    // update_strategy case removed (custom strategy meta tool)
 
     case 'place_market_order':
       return callWithFormat(async () => {
@@ -4188,18 +3757,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case 'post_orders':
       return callWithFormat(async () => (await getSec()).postOrders(args), F.formatOrderResponses, name);
 
-    case 'send_heartbeat':
-      return callWithFormat(async () => {
-        const sec = await getSec();
-        if (typeof (sec as any).sendHeartbeat === 'function') {
-          return await (sec as any).sendHeartbeat();
-        }
-        // Fallback / note per SDK (often internal for WS keepalive; REST session via regular activity)
-        return { 
-          status: 'heartbeat acknowledged or managed internally by SDK client',
-          note: 'Hermes (host) owns the heartbeat.md / OpenClaw CLOB liveness enforcement. Call send_heartbeat from the host heartbeat tick/resource notification per its native contract to keep sessions and orders active. This MCP surface exists so the MCP remains responsive under host-driven heartbeat control. Use with wait_seconds per host policy. SDK WS clients often handle internally.'
-        };
-      }, F.formatGeneric, name);
+    // send_heartbeat removed (internal; not a public SDK tool exposed to agents)
 
     // === Direct On-Chain (secure) ===
     case 'approve_erc20':

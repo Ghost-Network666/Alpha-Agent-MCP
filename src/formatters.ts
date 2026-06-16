@@ -1386,4 +1386,43 @@ export function formatWeather(data: any, location: string, type: 'forecast' | 'h
   return omitUndefined(summary);
 }
 
+/**
+ * Converts a formatted object (from any format* function) into clean, human-readable text.
+ * Produces **Label:** value lines, handles nested objects/arrays as indented lists.
+ * This ensures NO raw JSON or SDK structures leak to the agent — every response is immediately readable.
+ */
+export function toHumanReadable(obj: any, title?: string, indent = 0): string {
+  if (obj == null || obj === undefined) return '—';
+  if (typeof obj !== 'object') return String(obj);
+  if (Array.isArray(obj)) {
+    const items = obj.map(item => '  '.repeat(indent) + '• ' + toHumanReadable(item, undefined, indent + 1)).join('\n');
+    return items || '—';
+  }
+  const lines: string[] = [];
+  for (const [rawKey, value] of Object.entries(obj)) {
+    if (value === undefined || value === null) continue;
+    // Cleaner label: handle / and - , collapse spaces, title case minimally for compactness and lower tokens
+    let label = rawKey
+      .replace(/([A-Z])/g, ' $1')
+      .replace(/[\/\-_]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    label = label.charAt(0).toUpperCase() + label.slice(1);
+    let valStr: string;
+    if (typeof value === 'object' && value !== null) {
+      valStr = '\n' + toHumanReadable(value, undefined, indent + 1);
+    } else {
+      valStr = String(value);
+    }
+    lines.push('  '.repeat(indent) + `**${label}:** ${valStr}`);
+  }
+  const body = lines.join('\n');
+  let out = title ? `**${title}**\n\n${body}` : body;
+  // Built-in guidance for faster decisions (appended if present in data or generic)
+  if (!out.includes('Next') && !out.includes('Recommendation') && !out.includes('Directive')) {
+    out += '\n\n**Guidance:** Review prices/liquidity, compute farmability if rewards eligible, then place with explicit size/price from calc (no intent). Use get_spread or get_farmability for live edge.';
+  }
+  return out;
+}
+
 

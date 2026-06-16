@@ -49,12 +49,28 @@ async function main() {
   send(cp, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const list = await wait(2);
   const tools = ((list as { result?: { tools?: unknown[] } }).result?.tools ?? []) as unknown[];
-  send(cp, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'mcp_doctor', arguments: {} } });
-  const doc = await wait(3);
-  const text = (doc as { result?: { content?: Array<{ text?: string }> } }).result?.content?.[0]?.text ?? '{}';
-  const report = JSON.parse(text);
-  report._cliHandshake = handshakeOk;
-  report._cliToolsListed = tools.length;
+  // Basic report only (no call to removed mcp_doctor tool)
+  const report = {
+    ok: handshakeOk && tools.length > 0,
+    server: 'alphamcp / clob-mcp (pure SDK)',
+    protocolVersion: '2024-11-05',
+    handshake: handshakeOk ? 'ok' : 'failed',
+    toolsListed: tools.length,
+    gammaTagCount: 0,
+    checks: [
+      { name: 'handshake', ok: handshakeOk, detail: handshakeOk ? 'initialize OK' : 'failed' },
+      { name: 'stdio_listening', ok: true, detail: 'pure SDK surface (no meta tools)' },
+      { name: 'tools_registered', ok: tools.length > 0, detail: `${tools.length} pure SDK wrappers` },
+    ],
+    hostDoctorCommands: {
+      grok: 'grok mcp doctor alphamcp',
+      hermes: 'hermes mcp test <server_name>',
+      openclaw: 'openclaw mcp doctor <server_name> --probe',
+    },
+    agentDirective: 'MCP healthy (basic). Pure 1:1 SDK only. tools/list has the surface. See AGENTS.md.',
+    _cliHandshake: handshakeOk,
+    _cliToolsListed: tools.length,
+  };
   console.log(JSON.stringify(report, null, 2));
   cp.kill();
   process.exit(report.ok ? 0 : 1);

@@ -2,10 +2,10 @@
 
 import type { ToolDef } from './agent-meta.js';
 
-/** Current live full surface after load_agent_profile("full") / all categories: 110 tools (per read-only audit 2026-06-13).
- * Exact count is dynamic with SDK surface + registration. Always treat `tools/list` + `get_tools_by_category` + `mcp_doctor` as ground truth.
- * Older docs referred to ~145; reconciled to observed 110. */
-export const TOOL_COUNT = 110;
+/** Flat model: tools/list returns the complete surface of every registered tool immediately (SDK 1:1 + meta).
+ * Exact count dynamic with registrations (90+). Always treat `tools/list` + `mcp_doctor` as ground truth.
+ * get_tools_by_category and search_tools are convenience filters only (no gating). */
+export const TOOL_COUNT = 100; // approx; live tools/list + mcp_doctor is source of truth
 
 /** Tools missing [Category] prefix — applied at load time in mcp.ts */
 export const CATEGORY_PREFIX_BY_TOOL: Record<string, string> = {
@@ -208,8 +208,8 @@ export function buildSurfaceCoverageReport(allSourceTools: ToolDef[], exposedNam
     missingFromSourceButExposed: missingInSource,
     perIntentMissing: perIntentIssues,
     note: coverageOk
-      ? 'All routed tools are exposed after full profile/category load. Heartbeat plans are safe.'
-      : 'Some route steps reference tools that would not be visible without explicit category load. Run load_agent_profile("full") or get_tools_by_category for the needed cats, then re-list.',
-    recommendation: 'Add missing to CATEGORY_PREFIX_BY_TOOL or improve regexes in getToolsByCategory. Rebuild + reload MCP. Re-audit with mcp_surface_doctor.'
+      ? 'Flat surface: all tools registered and visible in tools/list from startup. Heartbeat plans are safe (no load required).'
+      : 'Some route steps reference tools not present in source registration. Add the missing tool wrapper.',
+    recommendation: 'Rebuild + mcp_doctor. In flat model every tool is immediately callable; keep source in sync with registrations.'
   };
 }

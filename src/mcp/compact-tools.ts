@@ -2,9 +2,9 @@ import type { ToolDef } from './agent-meta.js';
 
 const MAX_DESC = 180;
 
-/** Short tool descriptions for tier-1 tools/list (full text in get_tools_by_category). */
+/** Short tool descriptions for pure SDK 1:1 tools in tools/list. */
 export const COMPACT_TOOL_DESCRIPTIONS: Record<string, string> = {
-  // Pure SDK wrappers only (custom meta, weather, crypto, strategy, security removed)
+  // Only direct Polymarket SDK wrappers (no meta)
   discover_topic: '[Discovery] Topic → events + markets + tokenIds.',
   fetch_market: '[Discovery] Market by id/slug/url/tokenId.',
   list_markets: '[Discovery] SDK listMarkets (tagId, titleSearch, clobTokenIds, rewardsMinSize, closed, pageSize, etc.).',
