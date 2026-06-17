@@ -2307,18 +2307,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // Use tag_id (number) only. Prefer client.gamma.markets.listMarkets when available.
       // list_events({ tagSlug }) is the reliable path for category discovery.
       let sdkArgs: Record<string, unknown> = { ...(args || {}) };
-      if (sdkArgs.tagSlug != null && sdkArgs.tagId == null) {
-        const slug = String(sdkArgs.tagSlug);
+      const hadTagSlug = sdkArgs.tagSlug != null;
+      delete sdkArgs.tagSlug; // NEVER forward tagSlug to the SDK (listMarkets only accepts numeric tag_id)
+      if (hadTagSlug && sdkArgs.tagId == null) {
+        const slug = String((args as any).tagSlug);
         let tid: number | null = null;
         try {
-          // Try direct SDK fetchTag first
+          // When tagSlug provided, call fetchTag({ slug }) to get the numeric id (definitive per SDK source)
           const tag = await pub.fetchTag({ slug });
           tid = (tag as any)?.id ?? (tag as any)?.tag_id ?? (tag as any)?.tagId;
         } catch {}
 
         if (tid == null) {
           try {
-            // Fallback to explicit Gamma path (as documented for the /markets API)
+            // Fallback to explicit Gamma path
             const g = (pub as any).gamma || pub;
             const tagsApi = g?.tags;
             if (tagsApi) {
@@ -2334,14 +2336,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (tid != null) {
-          sdkArgs.tagId = Number(tid);
-          sdkArgs.tag_id = Number(tid);
+          sdkArgs.tag_id = Number(tid); // pass tag_id: tag.id 
         }
       }
-      if (sdkArgs.tagId != null) {
+      if (sdkArgs.tagId != null && sdkArgs.tag_id == null) {
         sdkArgs.tag_id = Number(sdkArgs.tagId);
       }
-      delete sdkArgs.tagSlug;
 
       const lim = Math.min(Math.max(1, Number((sdkArgs as any).limit ?? (sdkArgs as any).pageSize ?? 10)), 100);
       const off = Number((sdkArgs as any).offset ?? 0) || 0;
