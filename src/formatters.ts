@@ -1390,6 +1390,7 @@ export function formatWeather(data: any, location: string, type: 'forecast' | 'h
  * Converts a formatted object (from any format* function) into clean, human-readable text.
  * Produces **Label:** value lines, handles nested objects/arrays as indented lists.
  * This ensures NO raw JSON or SDK structures leak to the agent — every response is immediately readable.
+ * Used as F.toHumanReadable in src/mcp.ts callWithFormat / callPaginatedWithFormat for all tool responses.
  */
 export function toHumanReadable(obj: any, title?: string, indent = 0): string {
   if (obj == null || obj === undefined) return '—';
