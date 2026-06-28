@@ -1,0 +1,1 @@
+{"type":"validation error","error":"query argument \"q\": empty"}
