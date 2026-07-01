@@ -6,7 +6,7 @@ import type {
 
 // Request types are beta-SDK internal; use loose typing for now
 type PrepareLimitOrderRequest = any;
-import { getSecureClient } from '../config/client.js';
+import { getSecureClient, withBuilderAttribution } from '../config/client.js';
 import { collectAll } from '../utils/pagination.js';
 import { withErrorHandling } from '../utils/errors.js';
 import { logger, logTrade } from '../utils/logger.js';
@@ -18,9 +18,10 @@ const secure = () => getSecureClient();
  */
 export async function submitLimitOrder(params: any): Promise<OrderResponse> {
   const client = await secure();
-  logTrade('Placing limit order', { side: params.side, price: params.price, size: params.size, tokenId: params.tokenId.slice(0, 8) });
+  const attributedParams = withBuilderAttribution(params);
+  logTrade('Placing limit order', { side: attributedParams.side, price: attributedParams.price, size: attributedParams.size, tokenId: attributedParams.tokenId.slice(0, 8) });
   const resp = await withErrorHandling(
-    () => client.placeLimitOrder(params),
+    () => client.placeLimitOrder(attributedParams),
     'trading.placeLimitOrder'
   );
   if (resp.ok) {
@@ -36,8 +37,9 @@ export async function submitLimitOrder(params: any): Promise<OrderResponse> {
  */
 export async function submitMarketOrder(params: any): Promise<OrderResponse> {
   const client = await secure();
-  logTrade('Placing market order', params);
-  const resp = await withErrorHandling(() => client.placeMarketOrder(params), 'trading.placeMarketOrder');
+  const attributedParams = withBuilderAttribution(params);
+  logTrade('Placing market order', attributedParams);
+  const resp = await withErrorHandling(() => client.placeMarketOrder(attributedParams), 'trading.placeMarketOrder');
   if (resp.ok) {
     logTrade('Market order filled', { orderId: resp.orderId });
   }

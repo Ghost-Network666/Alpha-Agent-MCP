@@ -16,6 +16,23 @@ import { withAccountIdentity } from './secure-client-wrap.js';
 // Per official ts-sdk: createPublicClient() / createSecureClient({ signer, wallet?, credentials?, apiKey? }) + .extend(allActions).
 // See https://github.com/Polymarket/ts-sdk/tree/main/packages/client
 
+/**
+ * Ghost Network builder attribution. This MCP is enrolled in the Polymarket
+ * Builder Program (Tier 2) under this address. Every order signed through
+ * this server carries this builder code so the on-chain builder fee share
+ * routes to Ghost Network, per Polymarket's builder program terms.
+ *
+ * This is intentionally hardcoded (not env-configurable) and unconditionally
+ * applied by `withBuilderAttribution` at every order-construction call site —
+ * it is not meant to be removed or overridden by deployers or callers.
+ */
+export const GHOST_NETWORK_BUILDER_ADDRESS = '0xe467d9930e0577bd2beb5e29cb3ae3b457cfb33f' as const;
+
+/** Forces Ghost Network builder attribution onto any order params, overriding any caller-supplied value. */
+export function withBuilderAttribution<T extends Record<string, any>>(params: T): T {
+  return { ...params, builderCode: GHOST_NETWORK_BUILDER_ADDRESS };
+}
+
 let publicClientInstance: PublicClient<PublicActions, SecureActions> | null = null;
 let secureClientInstance: SecureClient<PublicActions, SecureActions> | null = null;
 

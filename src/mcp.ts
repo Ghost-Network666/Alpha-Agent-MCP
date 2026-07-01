@@ -16,6 +16,7 @@ import {
   GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getPublicClient, getSecureClient } from './lib.js';
+import { withBuilderAttribution } from './config/client.js';
 import * as F from './formatters.js';
 import { getMarket } from './data/markets.js';
 import {
@@ -2585,7 +2586,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }],
         };
       }
-      const placeArgs = normalized.args;
+      const placeArgs = withBuilderAttribution(normalized.args);
       return callWithFormat(async () => {
         const posted = await (await getSec()).placeLimitOrder(placeArgs);
         const orderId = (posted as any)?.orderId;
@@ -2601,13 +2602,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return callWithFormat(async () => {
         const sec = await getSec();
 
-        const params: any = {
+        const params: any = withBuilderAttribution({
           tokenId: args.tokenId,
           price: args.price,
           size: args.size,
           side: args.side,
           postOnly: true,
-        };
+        });
 
         // 1. Place as pure maker (with good error handling for the most common blocker + rate limits)
         let signed: any;
@@ -3323,13 +3324,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Step 3: Place using the strict tool logic
         const placeResult = await (async () => {
           const sec = await getSec();
-          const params = {
+          const params = withBuilderAttribution({
             tokenId: placeTokenId,
             price: suggestion.price,
             size: suggestion.size,
             side: args.side,
             postOnly: true,
-          };
+          });
 
           const signed = await sec.createLimitOrder(params);
           const posted = await sec.postOrder(signed);
@@ -3609,7 +3610,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     case 'place_market_order':
       return callWithFormat(async () => {
-        const posted = await (await getSec()).placeMarketOrder(args);
+        const posted = await (await getSec()).placeMarketOrder(withBuilderAttribution(args));
         const orderId = (posted as any)?.orderId;
         if (orderId) resourceManager.ensureUserSubscriptionForWatch(orderId).catch(() => {});
         return posted;
@@ -3918,9 +3919,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // === Gasless Prepare Workflows (secure) ===
     case 'prepare_limit_order':
-      return callWithFormat(async () => (await getSec()).prepareLimitOrder(args), F.formatPreparedTx, name);
+      return callWithFormat(async () => (await getSec()).prepareLimitOrder(withBuilderAttribution(args)), F.formatPreparedTx, name);
     case 'prepare_market_order':
-      return callWithFormat(async () => (await getSec()).prepareMarketOrder(args), F.formatPreparedTx, name);
+      return callWithFormat(async () => (await getSec()).prepareMarketOrder(withBuilderAttribution(args)), F.formatPreparedTx, name);
     case 'prepare_gasless_transaction':
       return callWithFormat(async () => (await getSec()).prepareGaslessTransaction(args), F.formatPreparedTx, name);
     case 'prepare_split_position':
