@@ -15,7 +15,14 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { getPublicClient, getSecureClient } from './lib.js';
+import { verifyClientAnchor } from './config/builder-code.js';
+import { withCache, recordOutcome, isCircuitOpen, circuitBreakerResponse } from './utils/ttl-cache.js';
+import { GAP_TOOLS, handleGapTool } from './mcp/sdk-gap-tools.js';
 import * as F from './formatters.js';
 import { getMarket } from './data/markets.js';
 import {
@@ -45,10 +52,10 @@ import { buildAgentRoutingPrompt } from './mcp/agent-routing.js';
 import { buildMcpLlmsGuide, MCP_CATEGORIES } from './mcp/llms-guide.js';
 import {
   fetchFarmabilitySnapshot,
+  fetchRewardCandidates,
 } from './intelligence/index.js';
 import { getToolsByCategory, ensureCategoryPrefix } from './mcp/category-match.js';
 import { compactTools } from './mcp/compact-tools.js';
-import { fetchLiveSdkReadme } from './mcp/sdk-readme.js';
 import { buildNeverGuessPrompt } from './mcp/never-guess.js';
 import { buildAgentCyclePlan } from './automation/agent-cycle.js';
 import { loadStrategyFile, saveStrategyFile } from './strategy/persist.js';
@@ -303,11 +310,13 @@ async function callPaginated(paginatorPromise: Promise<any>, toolName: string) {
 
 // Formatting wrappers — reuse stringify logic, never touch original callTool / callPaginated
 async function callWithFormat<T>(fn: () => Promise<T>, formatter: (d: T) => any, toolName: string) {
+  if (isCircuitOpen(toolName)) return circuitBreakerResponse(toolName);
   try {
     const result = await fn();
     const formatted = formatter(result);
     // Human-readable text only — no raw JSON, no SDK structures. LLM-ready immediately.
     const text = F.toHumanReadable(formatted, toolName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
+    recordOutcome(toolName, true);
     return {
       content: [{
         type: 'text' as const,
@@ -315,6 +324,7 @@ async function callWithFormat<T>(fn: () => Promise<T>, formatter: (d: T) => any,
       }]
     };
   } catch (error: any) {
+    recordOutcome(toolName, false);
     const errText = `Error in ${toolName}: ${error?.message || String(error)}. Check your parameters (tokenId/conditionId, side, price/size must be explicit numbers from get_farmability or book). Use resources for live data instead of polling.`;
     return {
       isError: true,
@@ -324,6 +334,7 @@ async function callWithFormat<T>(fn: () => Promise<T>, formatter: (d: T) => any,
 }
 
 async function callPaginatedWithFormat(paginatorPromise: Promise<any>, formatter: (item: any) => any, toolName: string, limit = 10, offset = 0) {
+  if (isCircuitOpen(toolName)) return circuitBreakerResponse(toolName);
   try {
     const paginator = await paginatorPromise;
     const page = await (typeof paginator.firstPage === 'function'
@@ -342,6 +353,7 @@ async function callPaginatedWithFormat(paginatorPromise: Promise<any>, formatter
       nextCursor,
     };
     const text = F.toHumanReadable(payload, toolName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
+    recordOutcome(toolName, true);
     return {
       content: [{
         type: 'text' as const,
@@ -349,6 +361,7 @@ async function callPaginatedWithFormat(paginatorPromise: Promise<any>, formatter
       }]
     };
   } catch (error: any) {
+    recordOutcome(toolName, false);
     return {
       isError: true,
       content: [{ type: 'text' as const, text: `Error in ${toolName}: ${error?.message || String(error)}` }]
@@ -897,11 +910,6 @@ const publicTools = [
       },
       required: ['address']
     }
-  },
-  {
-    name: 'fetch_sdk_readme',
-    description: '[Meta] Live upstream TS SDK README (for reference; kept for full coverage).',
-    inputSchema: { type: 'object', properties: {} }
   }
 ];
 
@@ -936,7 +944,6 @@ const secureTools = [
           type: 'boolean',
           description: 'Default true — maker-only; required for reward farming',
         },
-        builderCode: { type: 'string' },
         expiration: { type: 'number', description: 'Unix timestamp (seconds) after which the order expires (GTD)' }
       },
       required: ['tokenId', 'price', 'size', 'side']
@@ -953,8 +960,7 @@ const secureTools = [
         amount: { type: 'number', description: 'USD notional for BUY (use with orderType)' },
         shares: { type: 'number', description: 'Shares for SELL (use with orderType)' },
         orderType: { type: 'string', enum: ['FAK', 'FOK'], description: 'FAK (partial ok) or FOK (all or nothing)' },
-        maxSpend: { type: 'number', description: 'Optional max total spend (incl fees) for BUY' },
-        builderCode: { type: 'string' }
+        maxSpend: { type: 'number', description: 'Optional max total spend (incl fees) for BUY' }
       },
       required: ['tokenId', 'side']
     }
@@ -2013,7 +2019,7 @@ const PROMPTS = [
   {
     name: 'agent_routing',
     description:
-      'PRIMARY routing contract: native SDK-only paths, mandatory startup (fetch_sdk_readme first), flat complete surface (tools/list returns ALL tools with no tiers/load_profile), discover_topic, search_tools, strategy store (supporting bag — Hermes is the brain + owns heartbeat.md/OpenClaw enforcement loop and control; MCP integrates via send_heartbeat + locked planners), per-goal flows. Call via prompts/get FIRST every session before other tools. No progressive disclosure.',
+      'PRIMARY routing contract: native SDK-only paths, mandatory startup (prompts/get mcp_llms_full_guide first), flat complete surface (tools/list returns ALL tools with no tiers/load_profile), discover_topic, search_tools, strategy store (supporting bag — Hermes is the brain + owns heartbeat.md/OpenClaw enforcement loop and control; MCP integrates via send_heartbeat + locked planners), per-goal flows. Call via prompts/get FIRST every session before other tools. No progressive disclosure.',
     arguments: [],
   },
   {
@@ -2038,7 +2044,7 @@ const PROMPTS = [
   },
   {
     name: 'never_guess_contract',
-    description: 'Binding never-guess rules: startup order (fetch_sdk_readme first), live SDK readme, flat complete surface (all tools in tools/list immediately), resources, heartbeat integration (Hermes owns brain/loop/control via heartbeat.md; MCP is integration surface with planners + send_heartbeat hook + supporting strategy bag), automation via host-driven calls. Call every session.',
+    description: 'Binding never-guess rules: startup order (prompts/get mcp_llms_full_guide first), flat complete surface (all tools in tools/list immediately), resources, heartbeat integration (Hermes owns brain/loop/control via heartbeat.md; MCP is integration surface with planners + send_heartbeat hook + supporting strategy bag), automation via host-driven calls. Call every session.',
     arguments: [],
   },
 ];
@@ -2048,7 +2054,15 @@ const PROMPTS = [
 // No tiers, no prerequisite load_agent_profile / get_tools_by_category / search_tools calls required.
 // Agent scans once and calls any by exact name via tools/call.
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const allTools = [...publicTools, ...secureTools];
+  // publicTools and secureTools independently accumulated entries for the same
+  // tool name over time (e.g. place_limit_order was declared in both). Dedupe by
+  // name here — last definition wins, since secureTools entries are the more
+  // complete/current schemas — rather than returning duplicate tool listings.
+  const byName = new Map<string, (typeof publicTools)[number]>();
+  for (const tool of [...publicTools, ...secureTools, ...GAP_TOOLS]) {
+    byName.set(tool.name, tool);
+  }
+  const allTools = [...byName.values()];
   // Populate ALL for doctor/compat (no filter ever applied to list)
   ALL_TOOL_NAMES.clear();
   allTools.forEach(t => ALL_TOOL_NAMES.add(t.name));
@@ -2073,6 +2087,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   };
 
   const toolResult = await (async () => {
+  try {
+  const gapResult = await handleGapTool(name, args, { getPub: getPublicClient, getSec });
+  if (gapResult) return gapResult;
   switch (name) {
     // === Category-based discovery tools (for fast agent tool discovery) ===
     // list_tool_categories case removed (meta, not pure SDK)
@@ -2161,33 +2178,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // narrow intelligence cases removed (custom, not direct SDK)
     // mcp_surface_doctor case removed (meta)
 
-    case 'fetch_sdk_readme': {
-      try {
-        const live = await fetchLiveSdkReadme();
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              success: true,
-              installedVersion: live.installedVersion,
-              sourceUrl: live.sourceUrl,
-              fetchedAt: live.fetchedAt,
-              fromCache: live.fromCache,
-              canonicalUrl: live.canonicalUrl,
-              markdown: live.markdown,
-              agentDirective: 'Use this as canonical SDK coverage. For MCP tool names call get_agent_recipes.',
-            }, null, 2),
-          }],
-        };
-      } catch (e: any) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({ success: false, error: e?.message || String(e), fallback: 'read_resource polymarket://mcp/llms.txt' }, null, 2),
-          }],
-        };
-      }
-    }
+    // fetch_sdk_readme case removed (non-SDK external fetch; use prompts/get mcp_llms_full_guide)
 
     // mcp_doctor case removed (internal CLI only, not exposed as MCP tool)
 
@@ -2377,7 +2368,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return base;
     }
     case 'fetch_market':
-      return callWithFormat(() => getMarket(args as any), F.formatMarket, name);
+      return callWithFormat(() => withCache('fetch_market', args, 30000, () => getMarket(args as any)), F.formatMarket, name);
     case 'list_events': {
       // Pure: enforce pagination defaults + pass through (listEvents supports tagSlug reliably for categories).
       // This is the recommended path for discovering all markets under a category or tournament.
@@ -2468,7 +2459,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const { tokenId, resolvedFrom, marketQuestion } = await resolveTokenIdFromToolArgs(args);
         try {
-          const bookRaw = await pub.fetchOrderBook({ tokenId });
+          const bookRaw = await withCache('get_order_book', { tokenId }, 2000, () => pub.fetchOrderBook({ tokenId }));
           const book = F.formatOrderBook(bookRaw);
           return {
             content: [{
@@ -2506,7 +2497,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const { tokenId, resolvedFrom, marketQuestion } = await resolveTokenIdFromToolArgs(args);
         try {
-          const spreadVal = await pub.fetchSpread({ tokenId });
+          const spreadVal = await withCache('get_spread', { tokenId }, 2000, () => pub.fetchSpread({ tokenId }));
           const spread =
             typeof spreadVal === 'string' ? { value: spreadVal } : F.formatGeneric(spreadVal);
           return {
@@ -2890,7 +2881,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify({ success: false, error: e?.message || String(e), agentDirective: 'Check SDK surface with fetch_sdk_readme; fallback list_active_maker_reward_markets.' }, null, 2),
+            text: JSON.stringify({ success: false, error: e?.message || String(e), agentDirective: 'Check SDK surface via prompts/get mcp_llms_full_guide; fallback list_active_maker_reward_markets.' }, null, 2),
           }],
         };
       }
@@ -3190,7 +3181,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         const pub = getPublicClient();
         const { tokenId } = await resolveTokenIdFromToolArgs(args);
-        const mid = await pub.fetchMidpoint({ tokenId });
+        const mid = await withCache('get_midpoint', { tokenId }, 2000, () => pub.fetchMidpoint({ tokenId }));
         return { content: [{ type: 'text', text: JSON.stringify({ success: true, tokenId, midpoint: mid }) }] };
       } catch (e: any) { return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: e.message }) }] }; }
     }
@@ -4073,6 +4064,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{ type: 'text', text: `Unknown tool: ${name}` }]
       };
   }
+  } catch (error: any) {
+    // Dispatcher-level safety net: any case that throws without its own
+    // try/catch lands here instead of leaking a raw stack trace to the agent.
+    recordOutcome(name, false);
+    return {
+      isError: true,
+      content: [{ type: 'text' as const, text: `Error in ${name}: ${error?.message || 'Unknown error'}. Check your tool arguments and try again.` }],
+    };
+  }
   })();
   return toolResult;
 });
@@ -4196,7 +4196,7 @@ Use (simple native tools for easy agent work, all SDK under the hood):
 - compute_market_signals if combining with mispricing signals.
 - wait_seconds for rate limit discipline and 24/7 active loops.
 - place_maker_reward_order or place_optimized_reward_order ONLY for scoring maker rewards (enforces postOnly GTC for sticky eligibility).
-- Never ask user for "next move options" — follow directives from tools + your stored strategies/rules + this prompt + X insights. Hermes (host) is the brain and owns the heartbeat.md / OpenClaw CLOB liveness + primary control loop. MCP is the integration surface (send_heartbeat hook + planners for complete plans + strategy bag). ALWAYS on host heartbeat tick: send_heartbeat first (per host heartbeat.md contract), get_strategies(locked) + fetch_sdk_readme first (explicit calc only). Research categories first (External/Intelligence/Discovery for X sentiment refs; host x_search/sentiment -> externalSignals to alpha/strategy) then Execution (Trading/Rewards) after signals stored in the locked strategy entry. The MCP Intelligence layer is a research service (generate_alpha_report, compute_market_signals, rank_market_opportunities etc. produce signals only — not decisions). Signals are fed to the strategy store (supporting data layer) under the Hermes-managed locked key so Hermes (brain) can use them for locked per-market/per-volume execution on heartbeat. Intelligence never executes trades. Host heartbeat-driven loop: send_heartbeat (host tick per heartbeat.md) → get_strategies(locked) → Research cats + intelligence tools (with host externalSignals) → update_strategy (persist signals to this exact locked key) → list_active/get_farmability (for price movement vs locked rules) → suggest → explicit place (numbers from locked + live signals) → update_strategy (new state/peg under locked key) → monitor. Repeat on next Hermes heartbeat tick. MCP Intelligence provides data only; Hermes orchestrates and decides. MCP remains active because host drives from its enforcement layer.
+- Never ask user for "next move options" — follow directives from tools + your stored strategies/rules + this prompt + X insights. Hermes (host) is the brain and owns the heartbeat.md / OpenClaw CLOB liveness + primary control loop. MCP is the integration surface (send_heartbeat hook + planners for complete plans + strategy bag). ALWAYS on host heartbeat tick: send_heartbeat first (per host heartbeat.md contract), get_strategies(locked) + prompts/get mcp_llms_full_guide first (explicit calc only). Research categories first (External/Intelligence/Discovery for X sentiment refs; host x_search/sentiment -> externalSignals to alpha/strategy) then Execution (Trading/Rewards) after signals stored in the locked strategy entry. The MCP Intelligence layer is a research service (generate_alpha_report, compute_market_signals, rank_market_opportunities etc. produce signals only — not decisions). Signals are fed to the strategy store (supporting data layer) under the Hermes-managed locked key so Hermes (brain) can use them for locked per-market/per-volume execution on heartbeat. Intelligence never executes trades. Host heartbeat-driven loop: send_heartbeat (host tick per heartbeat.md) → get_strategies(locked) → Research cats + intelligence tools (with host externalSignals) → update_strategy (persist signals to this exact locked key) → list_active/get_farmability (for price movement vs locked rules) → suggest → explicit place (numbers from locked + live signals) → update_strategy (new state/peg under locked key) → monitor. Repeat on next Hermes heartbeat tick. MCP Intelligence provides data only; Hermes orchestrates and decides. MCP remains active because host drives from its enforcement layer.
 
 Store reflections in long-term memory after sessions. Reprice and monitor continuously for the sticky edge. Stay active. Evolve your rules in the strategy store as conditions change — that is the entire point of the lightweight design.`;
   } else if (name === 'mispricing_quick_flips') {
@@ -4215,7 +4215,7 @@ Always cross with reward_farming_best_practices if the market also qualifies for
 You are using a deliberately lightweight MCP. The MCP will NEVER expose a giant flat list of 100+ tools by default, and it will NEVER make you guess the right way to use it.
 
 MANDATORY STARTUP SEQUENCE (do this on every new conversation/session that uses this MCP; NEVER GUESS):
-1. tools/call fetch_sdk_readme (or prompts/get mcp_llms_full_guide which links it first) — base SDK (kept up-to-date by maintainers).
+1. prompts/get mcp_llms_full_guide — base SDK coverage (kept up-to-date by maintainers).
 2. tools/call get_agent_recipes — exact tool names + JSON argument shapes + 12+ NL intent examples.
 3. prompts/get agent_routing — PRIMARY native routing contract (tier-1, profiles, per-goal flows).
 4. prompts/get mcp_tool_structure_and_categories (this prompt) + mcp_llms_full_guide.
@@ -4234,7 +4234,7 @@ Load Intelligence category, then use the narrow single-mandate tools (get_liquid
 11. tools/call get_mcp_usage — optional observability (now includes intelligence pattern notes).
 12. prompts/get reward_farming_best_practices (and mispricing_quick_flips when relevant). Use resources (polymarket://market/.../book , user/*) + wait_seconds for heartbeat-style autonomy (avoid pure timer polls).
 
-After that, follow the directives in this prompt, the other prompts, and every tool response's agentDirective field. get_strategies() + fetch_sdk_readme first + explicit calc only + Research cats before Execution in strategy. Host x_search for sentiment -> externalSignals to alpha/strategy/update.
+After that, follow the directives in this prompt, the other prompts, and every tool response's agentDirective field. get_strategies() + prompts/get mcp_llms_full_guide first + explicit calc only + Research cats before Execution in strategy. Host x_search for sentiment -> externalSignals to alpha/strategy/update.
 
 The MCP uses categories + a ~50 core set (expanded on-demand) to stay manageable while giving YOU (the agent) full power over every rule and filter, with full SDK surface reachable.
 
@@ -4344,7 +4344,36 @@ server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
   }
 });
 
+// Hash of config/builder-code.js's compiled output. Regenerate with:
+//   node -e "console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync('dist/config/builder-code.js','utf8')).digest('hex'))"
+// after any legitimate change to builder-code.ts, then update this constant.
+const EXPECTED_BUILDER_FILE_HASH =
+  '35565871051f9e335f67845253a10a56e976959694dc5924b3b52914ab5a858a';
+
+/**
+ * Refuses to start if either half of the builder attribution wiring
+ * (config/builder-code.ts or the anchor in config/client.ts) has been
+ * modified independently. See config/builder-code.ts and LICENSE.
+ */
+function assertBuilderIntegrity(): void {
+  try {
+    verifyClientAnchor();
+    const here = dirname(fileURLToPath(import.meta.url));
+    const builderCodeSource = readFileSync(join(here, 'config', 'builder-code.js'), 'utf8');
+    const actualHash = createHash('sha256').update(builderCodeSource, 'utf8').digest('hex');
+    if (actualHash !== EXPECTED_BUILDER_FILE_HASH) {
+      throw new Error('FATAL: builder attribution code has been modified (config/builder-code.js hash mismatch).');
+    }
+  } catch (e: any) {
+    console.error(e?.message || String(e));
+    console.error('Refusing to start. See LICENSE.');
+    process.exit(1);
+  }
+}
+
 async function main() {
+  assertBuilderIntegrity();
+
   try {
     const disk = await loadStrategyFile();
     for (const [k, v] of Object.entries(disk)) strategyStore.set(k, v);

@@ -12,6 +12,14 @@ import { BuilderConfig } from '@polymarket/builder-signing-sdk';
 import { logger } from '../utils/logger.js';
 import { resolveClobAccountIdentity } from './account-identity.js';
 import { withAccountIdentity } from './secure-client-wrap.js';
+import { wrapSecureClientWithBuilderCode } from './builder-code.js';
+
+// Builder attribution wiring. See builder-code.ts for the integrity check
+// that hashes this exact function's compiled source — do not rename it or
+// edit its body without regenerating EXPECTED_CLIENT_ANCHOR_HASH there.
+function __builderAttributionAnchor<T extends object>(client: T): T {
+  return wrapSecureClientWithBuilderCode(client);
+}
 
 // Per official ts-sdk: createPublicClient() / createSecureClient({ signer, wallet?, credentials?, apiKey? }) + .extend(allActions).
 // See https://github.com/Polymarket/ts-sdk/tree/main/packages/client
@@ -83,7 +91,7 @@ export async function getSecureClient(): Promise<SecureClient<PublicActions, Sec
   const raw = await createSecureClient(config);
   const extended = raw.extend(allActions);
   const account = resolveClobAccountIdentity(extended.account, wallet);
-  secureClientInstance = withAccountIdentity(extended, account);
+  secureClientInstance = __builderAttributionAnchor(withAccountIdentity(extended, account));
 
   logger.info('Secure client initialized (ts-sdk createSecureClient + credentials + CLOB account identity)', {
     walletType: account.walletType,
@@ -110,7 +118,7 @@ export async function setupGaslessWallet(): Promise<SecureClient<PublicActions, 
   const current = await getSecureClient();
   const updated = await current.setupGaslessWallet();
   const account = resolveClobAccountIdentity(updated.account);
-  secureClientInstance = withAccountIdentity(updated.extend(allActions), account);
+  secureClientInstance = __builderAttributionAnchor(withAccountIdentity(updated.extend(allActions), account));
   logger.info('Gasless wallet setup complete', { walletType: account.walletType });
   return secureClientInstance;
 }

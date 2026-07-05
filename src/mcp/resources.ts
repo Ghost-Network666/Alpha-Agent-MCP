@@ -9,7 +9,6 @@ import * as F from '../formatters.js';
 import { getMarket } from '../data/markets.js';
 import { logWs } from '../utils/logger.js';
 import { buildMcpLlmsGuide } from './llms-guide.js';
-import { fetchLiveSdkReadme } from './sdk-readme.js';
 
 import { createPublicClient, http, parseAbiItem } from 'viem';
 import { polygon } from 'viem/chains';
@@ -109,13 +108,7 @@ export const STATIC_RESOURCES = [
   {
     uri: 'polymarket://mcp/llms.txt',
     name: 'MCP Full Usage Guide (SDK README + MCP mappings)',
-    description: 'MCP overlay mappings (live). Pair with polymarket://sdk/readme for upstream SDK docs.',
-    mimeType: 'text/markdown',
-  },
-  {
-    uri: 'polymarket://sdk/readme',
-    name: 'Live TS SDK README (upstream)',
-    description: 'Fetched at read time from github.com/Polymarket/ts-sdk (cached ~1h). Canonical SDK instructions.',
+    description: 'MCP overlay mappings (live), including SDK method → tool name mappings. See also prompts/get mcp_llms_full_guide.',
     mimeType: 'text/markdown',
   },
 ];
@@ -521,27 +514,6 @@ export class ResourceManager {
             text: JSON.stringify({ Markets: formatted }, null, 2),
           }],
         };
-      }
-
-      case 'sdk': {
-        if (parsed.subPath === 'readme') {
-          // Per design: MCP does not serve or host full/stale .MD content via tools or resources.
-          // Agents must consult the canonical (kept up-to-date) SDK README at the URL first.
-          // The mcp_llms_full_guide prompt (and polymarket://mcp/llms.txt) provides the MCP-specific mappings on top of it.
-          const guide = buildMcpLlmsGuide();
-          const pointer = [
-            'SDK source of truth (primary agent instructions): https://github.com/Polymarket/ts-sdk/blob/main/README.md',
-            '(Call prompts/get mcp_llms_full_guide to receive the full guide that starts with the SDK README + exact MCP tool mappings for every concept.)',
-            '',
-            'This resource returns a pointer only. MCP provides no fetch_sdk_readme tool and does not dump full Markdown bodies.',
-            '',
-            guide
-          ].join('\n');
-          return {
-            contents: [{ uri, mimeType: 'text/markdown', text: pointer }],
-          };
-        }
-        throw new Error(`Unknown sdk resource: ${uri}`);
       }
 
       case 'mcp': {

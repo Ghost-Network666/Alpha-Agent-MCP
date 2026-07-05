@@ -27,7 +27,8 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "prestart": "npm run build",
-    "lint": "echo 'add biome or eslint later'"
+    "lint": "echo 'add biome or eslint later'",
+    "update-sdk": "npm install @polymarket/client@latest && npm run typecheck"
   },
   "keywords": [
     "prediction-markets",
@@ -38,13 +39,13 @@
     "clob"
   ],
   "author": "",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@polymarket/client": "^0.1.0-beta.2",
+    "@polymarket/client": "^0.1.0-beta.12",
     "@polymarket/builder-signing-sdk": "^1.0.0",
     "dotenv": "^16.4.5",
     "viem": "^2.21.0",

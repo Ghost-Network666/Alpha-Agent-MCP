@@ -28,7 +28,6 @@ ${tier1}
 Full surface: get_tools_by_category or load_agent_profile. Categories: ${cats}.
 
 ## 3. Live docs
-- polymarket://sdk/readme
 - polymarket://mcp/llms.txt
 
 ## 4. Strategy brain

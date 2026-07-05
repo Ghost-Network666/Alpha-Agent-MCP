@@ -54,7 +54,6 @@ export const COMPACT_TOOL_DESCRIPTIONS: Record<string, string> = {
   subscribe_sports: '[WS] Subscribe to sports topic (scores, periods) via SDK SportsWebSocketManager.',
   subscribe_user: '[WS] Subscribe to authenticated user topic (private updates) via SDK ClobUserWebSocketManager.',
   subscribe_prices_crypto: '[WS] Subscribe to real-time prices topic via SDK RtdsWebSocketManager.',
-  fetch_sdk_readme: '[Meta] Live upstream TS SDK README (for reference; kept for full coverage).',
 };
 
 export function compactTool(tool: ToolDef): ToolDef {

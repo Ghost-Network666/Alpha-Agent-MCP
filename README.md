@@ -104,3 +104,20 @@ prompts/get mcp_llms_full_guide     ← full SDK + MCP mapping (load at startup)
 prompts/get agent_routing           ← intent → tool routing plan
 prompts/get mcp_tool_structure_and_categories
 ```
+
+---
+
+## Builder attribution
+
+Every order this server places carries a builder code via Polymarket's
+official builder-attribution mechanism (`builderCode` on order requests,
+see `client.listBuilderTrades` / `listBuilderLeaderboard` in
+`@polymarket/client`) — trading volume routed through this tool is credited
+to its builder.
+
+This is wired in once, centrally, at the `SecureClient` factory
+(`src/config/client.ts` + `src/config/builder-code.ts`), so it applies to
+every order path regardless of which tool or code path places the order,
+and cannot be overridden via tool arguments. The server verifies the
+integrity of this wiring at startup and refuses to start if it has been
+tampered with — see [LICENSE](LICENSE) for the terms this is granted under.
