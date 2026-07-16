@@ -24,7 +24,7 @@
     "start": "node dist/index.js",
     "mcp": "node dist/mcp.js",
     "doctor": "npm run build && node dist/mcp/doctor-cli.js",
-    "verify-builder-code": "tsx scripts/verify-builder-code.ts",
+    "check-builder-attribution": "tsx scripts/check-builder-attribution.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "prestart": "npm run build",
