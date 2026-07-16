@@ -6,7 +6,8 @@
   "main": "dist/lib.js",
   "types": "dist/lib.d.ts",
   "bin": {
-    "polymarket-client": "dist/index.js"
+    "polymarket-client": "dist/index.js",
+    "alpha-agent-mcp": "dist/mcp.js"
   },
   "exports": {
     ".": {

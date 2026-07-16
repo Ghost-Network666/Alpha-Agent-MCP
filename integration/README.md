@@ -22,6 +22,15 @@ same three pieces into its native schema:
   doc). Omit auth vars entirely to run read-only/discovery tools with zero
   config.
 
+**This package is not published to npm.** There is no `npx alpha-agent-mcp`
+today — the `alpha-agent-mcp` bin in `package.json` (pointing at
+`dist/mcp.js`) exists for whenever it is published, but until then every
+host must be pointed at a local clone via `command`/`args`/`cwd` as above,
+not a package name. Any Claude Code, Grok-built, or other MCP-spec-compliant
+agent works identically once pointed at the built `dist/mcp.js` — the
+protocol layer (handshake, `tools/list`, `tools/call`) is host-agnostic by
+construction; nothing in this server is Claude-specific.
+
 ## First run
 
 ```bash
