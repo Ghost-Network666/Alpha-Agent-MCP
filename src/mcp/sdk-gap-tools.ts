@@ -14,6 +14,7 @@
  */
 import * as actions from '@polymarket/client/actions';
 import * as F from '../formatters.js';
+import { withBuilderCode } from '../config/builder-code.js';
 
 type ToolDef = { name: string; description: string; inputSchema: any };
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
@@ -195,11 +196,17 @@ export async function handleGapTool(name: string, args: any, ctx: GapToolContext
 
       case 'prepare_limit_order_posting': {
         const sec = await ctx.getSec();
-        return ok(await actions.prepareLimitOrderPosting(sec, args), 'Prepared Limit Order Posting');
+        return ok(
+          await actions.prepareLimitOrderPosting(sec, withBuilderCode(args)),
+          'Prepared Limit Order Posting'
+        );
       }
       case 'prepare_market_order_posting': {
         const sec = await ctx.getSec();
-        return ok(await actions.prepareMarketOrderPosting(sec, args), 'Prepared Market Order Posting');
+        return ok(
+          await actions.prepareMarketOrderPosting(sec, withBuilderCode(args)),
+          'Prepared Market Order Posting'
+        );
       }
       case 'prepare_trading_approvals': {
         const sec = await ctx.getSec();
