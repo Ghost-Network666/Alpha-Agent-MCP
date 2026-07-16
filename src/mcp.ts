@@ -57,7 +57,6 @@ import {
 import { getToolsByCategory, ensureCategoryPrefix } from './mcp/category-match.js';
 import { compactTools } from './mcp/compact-tools.js';
 import { buildNeverGuessPrompt } from './mcp/never-guess.js';
-import { buildAgentCyclePlan } from './automation/agent-cycle.js';
 import { loadStrategyFile, saveStrategyFile } from './strategy/persist.js';
 import { resolveConditionIdForToken, resolveTokenIdFromToolArgs } from './utils/clob-token.js';
 import { normalizePlaceLimitOrderArgs } from './trading/place-limit-args.js';
